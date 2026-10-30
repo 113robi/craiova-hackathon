@@ -8,4 +8,4 @@ r = client.models.generate_content(
     model="gemini-3.5-flash-lite",
     contents="raspunde cu un cuvant: salut",
 )
-print(r.text)s
+print(r.text)
