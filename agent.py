@@ -71,7 +71,9 @@ class _MapCollector:
             self.route = result["path"]          # ultimul traseu valid castiga
             self.highlight.append(result["target"])
         elif name == "list_places":
-            self.highlight.extend(p["id"] for p in result.get("available_now", []))
+            # Daca nu e nimic accesibil acum (ex. mancare doar dupa securitate), aratam locurile de dupa control.
+            places = result.get("available_now") or result.get("after_security") or []
+            self.highlight.extend(p["id"] for p in places)
         elif name == "flight_status" and result.get("found"):
             self.highlight.append(result["gate"])
         elif name == "next_step":

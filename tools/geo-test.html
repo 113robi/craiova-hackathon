@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Test localizare terminal</title>
+<title>Măsurare terminal</title>
 <style>
   :root {
     --bg: #f4f6f8; --card: #ffffff; --fg: #12202e; --muted: #5b6b7a; --line: #d9e0e6;
@@ -22,152 +22,290 @@
   h1 { font-size: 20px; margin: 4px 0 0; }
   p { margin: 0; color: var(--muted); font-size: 14px; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: grid; gap: 10px; }
-  .acc { font: 700 52px/1 var(--mono); font-variant-numeric: tabular-nums; }
-  .acc small { font-size: 18px; font-weight: 500; color: var(--muted); }
-  .verdict { font-weight: 600; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .label { color: var(--muted); font-size: 13px; }
+  .big { font: 700 34px/1.1 var(--mono); font-variant-numeric: tabular-nums; }
   .good { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); }
   dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 14px; }
   dt { color: var(--muted); } dd { margin: 0; font-family: var(--mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-  button, input { font: inherit; border-radius: 8px; }
+  button, input, select, textarea { font: inherit; border-radius: 8px; }
   button { background: var(--accent); color: #fff; border: 0; padding: 12px 14px; font-weight: 600; }
   button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
-  button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  input, select { padding: 11px 12px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); width: 100%; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   .row > * { flex: 1 1 140px; min-width: 0; }
-  input { padding: 11px 12px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
   .chips { display: flex; gap: 6px; flex-wrap: wrap; }
   .chips button { flex: 0 0 auto; padding: 6px 10px; font-size: 14px; background: var(--bg); color: var(--fg); border: 1px solid var(--line); font-weight: 500; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .check { display: flex; gap: 10px; align-items: center; font-weight: 600; }
+  .check input { width: 22px; height: 22px; flex: 0 0 auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
   th, td { text-align: left; padding: 5px 4px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-  th { color: var(--muted); font-weight: 500; font-family: system-ui, sans-serif; }
+  th { color: var(--muted); font-weight: 500; }
   .scroll { overflow-x: auto; }
+  textarea { width: 100%; min-height: 140px; padding: 8px; font: 12px/1.4 var(--mono); border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
   #err { color: var(--bad); font-weight: 600; }
 </style>
 </head>
 <body>
 <main>
   <div>
-    <h1>Test localizare in terminal</h1>
-    <p>Lasati pagina deschisa si mergeti prin terminal. La fiecare punct cunoscut (intrare, check-in, securitate...) apasati pe numele lui ca sa salvati citirea.</p>
+    <h1>Măsurare terminal</h1>
+    <p>Lângă fiecare loc, stai pe loc 10–15 secunde, apoi salvează-l. Pagina face media citirilor din ultimele 10 secunde. Datele rămân salvate în telefon chiar dacă reîncarci pagina.</p>
   </div>
 
   <section class="card" aria-live="polite">
-    <div class="acc"><span id="acc">--</span> <small>m precizie</small></div>
-    <div id="verdict" class="verdict">Astept prima pozitie... (permiteti accesul la locatie)</div>
+    <div class="stats">
+      <div>
+        <div class="label">Poziție în hol (media pe 10 s)</div>
+        <div class="big" id="pos">--</div>
+        <div class="label" id="dir">--</div>
+      </div>
+      <div>
+        <div class="label">Precizie</div>
+        <div class="big" id="acc">--</div>
+        <div class="label" id="verdict">Aștept prima poziție... (permite accesul la locație)</div>
+      </div>
+    </div>
     <div id="err" hidden></div>
     <dl>
-      <dt>Latitudine</dt><dd id="lat">--</dd>
-      <dt>Longitudine</dt><dd id="lon">--</dd>
-      <dt>Actualizari</dt><dd id="count">0</dd>
-      <dt>Ultima acum</dt><dd id="age">--</dd>
-      <dt>Miscare fata de start</dt><dd id="moved">--</dd>
+      <dt>Abatere laterală</dt><dd id="side">--</dd>
+      <dt>Citiri bune (10 s)</dt><dd id="nbuf">0</dd>
+      <dt>Coordonate</dt><dd id="coords">--</dd>
+      <dt>Ultima citire</dt><dd id="age">--</dd>
     </dl>
   </section>
 
   <section class="card">
-    <strong>Salveaza punctul in care esti</strong>
+    <strong>Salvează locul în care ești</strong>
     <div class="chips" id="chips"></div>
+    <input id="name" placeholder="numele locului (ex. Toaletă, Cafenea Tucano)" aria-label="Numele locului">
     <div class="row">
-      <input id="label" placeholder="alt nume (ex. toaleta)" aria-label="Nume punct">
-      <button id="mark" type="button">Salveaza</button>
+      <select id="type" aria-label="Tipul locului">
+        <option value="toaleta">Toaletă</option>
+        <option value="mancare">Mâncare / cafenea</option>
+        <option value="magazin">Magazin</option>
+        <option value="poarta">Poartă</option>
+        <option value="checkin">Check-in</option>
+        <option value="securitate">Securitate</option>
+        <option value="informatii">Informații</option>
+        <option value="atm">ATM</option>
+        <option value="schimb">Schimb valutar</option>
+        <option value="fumat">Zonă fumat</option>
+        <option value="iesire">Ieșire / sosiri</option>
+        <option value="reper">Reper (capăt de hol, colț)</option>
+        <option value="altceva">Altceva</option>
+      </select>
+      <select id="wall" aria-label="Peretele">
+        <option value="cu_intrarea">Perete cu intrarea</option>
+        <option value="opus">Perete opus</option>
+        <option value="mijloc">Mijlocul holului</option>
+        <option value="nu_stiu">Nu știu</option>
+      </select>
+      <select id="zone" aria-label="Zona">
+        <option value="inainte">Înainte de securitate</option>
+        <option value="dupa">După securitate</option>
+      </select>
     </div>
+    <button id="save" type="button">Salvează locul</button>
+    <p id="msg"></p>
+  </section>
+
+  <section class="card">
+    <label class="check"><input type="checkbox" id="track"> Înregistrează tot traseul (pentru forma holului)</label>
+    <p id="trackinfo">0 puncte înregistrate.</p>
   </section>
 
   <section class="card">
     <div class="row">
-      <strong style="align-self:center">Puncte salvate</strong>
-      <button id="copy" class="secondary" type="button">Copiaza rezultatele</button>
+      <strong>Locuri salvate</strong>
+      <button id="undo" class="secondary" type="button">Șterge ultimul</button>
     </div>
     <div class="scroll">
       <table>
-        <thead><tr><th>Punct</th><th>Ora</th><th>Precizie</th><th>Lat</th><th>Lon</th></tr></thead>
-        <tbody id="rows"><tr><td colspan="5">Niciun punct inca.</td></tr></tbody>
+        <thead><tr><th>Loc</th><th>Tip</th><th>Perete</th><th>Zonă</th><th>Metri</th><th>Precizie</th><th>Citiri</th></tr></thead>
+        <tbody id="rows"></tbody>
       </table>
     </div>
-    <p id="copied"></p>
+    <p class="label">Metri: pozitiv = spre securitate, negativ = în partea opusă securității.</p>
+    <div class="row">
+      <button id="copy" type="button">Copiază tot</button>
+      <button id="clear" class="secondary" type="button">Golește tot</button>
+    </div>
+    <textarea id="out" readonly hidden aria-label="Rezultate"></textarea>
   </section>
 </main>
 
 <script>
   const $ = (id) => document.getElementById(id);
-  const POINTS = ["Intrare", "Check-in", "Inainte de securitate", "Dupa securitate", "Poarta"];
-  let last = null, start = null, count = 0;
-  const marks = [];
 
-  function metersBetween(a, b) {
-    const R = 6371000, toRad = (d) => d * Math.PI / 180;
-    const dLat = toRad(b.lat - a.lat), dLon = toRad(b.lon - a.lon);
-    const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLon / 2) ** 2;
-    return 2 * R * Math.asin(Math.sqrt(h));
+  // Calibrarea din airport_core.py (masuratorile S21): intrarea si poarta definesc axa holului.
+  const ORIGIN = [44.312464, 23.877588];
+  const AXIS_END = [44.312480, 23.878433];
+  const K = Math.cos(ORIGIN[0] * Math.PI / 180);
+  const EX = (AXIS_END[1] - ORIGIN[1]) * 111320 * K, NY = (AXIS_END[0] - ORIGIN[0]) * 111320;
+  const LEN = Math.hypot(EX, NY), UX = EX / LEN, UY = NY / LEN;
+  const MAX_ACC = 30;          // citirile mai slabe nu intra in medie si in traseu
+  const WINDOW_MS = 10000;     // media pe ultimele 10 secunde
+  const STORE = "acm-masurare-v1";
+
+  const WALL = { cu_intrarea: "cu intrarea", opus: "opus", mijloc: "mijloc", nu_stiu: "?" };
+  const ZONE = { inainte: "înainte", dupa: "după" };
+  const CHIPS = [
+    ["Intrare", "reper"], ["Capăt stânga", "reper"], ["Capăt dreapta", "reper"],
+    ["Început securitate", "securitate"], ["Sfârșit securitate", "securitate"], ["Check-in", "checkin"],
+    ["Toaletă", "toaleta"], ["Poarta 1", "poarta"], ["Poarta 2", "poarta"],
+  ];
+
+  let last = null, buf = [], marks = [], track = [];
+
+  function toAxis(lat, lon) {
+    const ex = (lon - ORIGIN[1]) * 111320 * K, ny = (lat - ORIGIN[0]) * 111320;
+    return { s: ex * UX + ny * UY, d: -ex * UY + ny * UX };
   }
 
-  function verdict(acc) {
-    if (acc <= 10) return ["good", "Foarte bun: se pot deosebi zonele terminalului."];
-    if (acc <= 20) return ["warn", "Acceptabil: zona publica vs zona de plecari, nu locuri exacte."];
-    return ["bad", "Slab: punctul poate sari intre zone. Nu ajunge singur."];
+  function load() {
+    try { const v = JSON.parse(localStorage.getItem(STORE) || "{}"); marks = v.marks || []; track = v.track || []; }
+    catch { marks = []; track = []; }
+  }
+  function persist() { try { localStorage.setItem(STORE, JSON.stringify({ marks, track })); } catch {} }
+
+  function average() {
+    const now = Date.now();
+    const use = buf.filter((f) => now - f.t <= WINDOW_MS);
+    if (!use.length) return last ? { lat: last.lat, lon: last.lon, acc: last.acc, n: 1 } : null;
+    let sw = 0, la = 0, lo = 0;
+    for (const f of use) { const w = 1 / Math.max(f.acc, 3) ** 2; sw += w; la += w * f.lat; lo += w * f.lon; }
+    return { lat: la / sw, lon: lo / sw, acc: use.reduce((a, f) => a + f.acc, 0) / use.length, n: use.length };
   }
 
   function onPos(p) {
     $("err").hidden = true;
-    count++;
-    last = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy, t: p.timestamp };
-    if (!start) start = last;
-    $("acc").textContent = Math.round(last.acc);
-    const [cls, text] = verdict(last.acc);
-    $("verdict").className = "verdict " + cls;
-    $("verdict").textContent = text;
-    $("lat").textContent = last.lat.toFixed(6);
-    $("lon").textContent = last.lon.toFixed(6);
-    $("count").textContent = count;
-    $("moved").textContent = Math.round(metersBetween(start, last)) + " m";
+    const c = p.coords, now = Date.now();
+    last = { lat: c.latitude, lon: c.longitude, acc: c.accuracy, t: now };
+    if (c.accuracy <= MAX_ACC) buf.push(last);
+    buf = buf.filter((f) => now - f.t <= WINDOW_MS);
+    if ($("track").checked && c.accuracy <= MAX_ACC) {
+      const prev = track[track.length - 1];
+      if (!prev || now - prev.t >= 2000) {   // un punct la 2 secunde e destul pentru forma holului
+        track.push({ lat: +c.latitude.toFixed(6), lon: +c.longitude.toFixed(6), acc: Math.round(c.accuracy), t: now });
+        if (track.length > 2000) track.shift();
+        persist();
+      }
+    }
+    render();
   }
 
   function onErr(e) {
     const msg = {
-      1: "Accesul la locatie a fost refuzat. Activati-l din setarile browserului pentru acest site.",
-      2: "Pozitia nu e disponibila. Porniti Locatia si Wi-Fi-ul telefonului.",
-      3: "Pozitia nu a venit la timp. Mai asteptati cateva secunde.",
+      1: "Accesul la locație a fost refuzat. Activează-l din setările browserului pentru acest site.",
+      2: "Poziția nu e disponibilă. Pornește Locația și Wi-Fi-ul telefonului.",
+      3: "Poziția nu a venit la timp. Mai așteaptă câteva secunde.",
     }[e.code] || e.message;
     $("err").textContent = msg;
     $("err").hidden = false;
   }
 
-  setInterval(() => {
-    if (last) $("age").textContent = Math.round((Date.now() - last.t) / 1000) + " s in urma";
-  }, 1000);
+  function render() {
+    $("trackinfo").textContent = track.length + " puncte înregistrate.";
+    if (!last) return;
+    const a = average(), ax = toAxis(a.lat, a.lon);
+    $("pos").textContent = Math.round(Math.abs(ax.s)) + " m";
+    $("dir").textContent = Math.abs(ax.s) < 2 ? "la intrare" : ax.s > 0 ? "spre securitate" : "în partea opusă securității";
+    $("acc").textContent = Math.round(last.acc) + " m";
+    const cls = last.acc <= 10 ? "good" : last.acc <= 20 ? "warn" : "bad";
+    $("acc").className = "big " + cls;
+    $("verdict").className = "label " + cls;
+    $("verdict").textContent = last.acc <= 10 ? "Bună" : last.acc <= 20 ? "Acceptabilă" : "Slabă: mai așteaptă";
+    $("side").textContent = (ax.d >= 0 ? "+" : "−") + Math.abs(ax.d).toFixed(0) + " m față de axa holului";
+    $("nbuf").textContent = buf.length;
+    $("coords").textContent = last.lat.toFixed(6) + ", " + last.lon.toFixed(6);
+  }
 
-  function save(name) {
-    if (!last) { $("copied").textContent = "Inca nu exista o pozitie de salvat."; return; }
-    marks.push({ name, ...last, time: new Date().toLocaleTimeString("ro-RO") });
-    $("rows").innerHTML = "";
+  function renderTable() {
+    const rows = $("rows");
+    rows.replaceChildren();
+    if (!marks.length) {
+      const tr = document.createElement("tr"), td = document.createElement("td");
+      td.colSpan = 7; td.textContent = "Niciun loc salvat încă."; tr.appendChild(td); rows.appendChild(tr);
+      return;
+    }
     for (const m of marks) {
       const tr = document.createElement("tr");
-      for (const v of [m.name, m.time, Math.round(m.acc) + " m", m.lat.toFixed(6), m.lon.toFixed(6)]) {
+      const typeLabel = $("type").querySelector(`option[value="${m.type}"]`)?.textContent || m.type;
+      for (const v of [m.name, typeLabel, WALL[m.wall] || m.wall, ZONE[m.zone] || m.zone,
+                       (m.s > 0 ? "+" : "") + m.s, m.acc + " m", m.n]) {
         const td = document.createElement("td"); td.textContent = v; tr.appendChild(td);
       }
-      $("rows").appendChild(tr);
+      rows.appendChild(tr);
     }
-    $("copied").textContent = "Salvat: " + name;
   }
 
-  for (const name of POINTS) {
+  function say(text) { $("msg").textContent = text; }
+
+  function save() {
+    const name = $("name").value.trim();
+    if (!name) { say("Scrie numele locului sau alege unul de mai sus."); return; }
+    const a = average();
+    if (!a) { say("Încă nu există o poziție. Așteaptă prima citire."); return; }
+    const ax = toAxis(a.lat, a.lon);
+    marks.push({
+      name, type: $("type").value, wall: $("wall").value, zone: $("zone").value,
+      s: +ax.s.toFixed(1), d: +ax.d.toFixed(1), acc: Math.round(a.acc), n: a.n,
+      lat: +a.lat.toFixed(6), lon: +a.lon.toFixed(6), time: new Date().toLocaleTimeString("ro-RO"),
+    });
+    persist();
+    renderTable();
+    $("name").value = "";
+    say(`Salvat: ${name} (media a ${a.n} citiri, precizie ${Math.round(a.acc)} m)` +
+        (a.acc > 15 ? ". Precizia e slabă: dacă poți, așteaptă și salvează din nou." : "."));
+  }
+
+  function exportText() {
+    const lines = ["LOCURI",
+      "nume;tip;perete;zona;metri_spre_securitate;abatere_laterala_m;precizie_m;citiri;lat;lon;ora",
+      ...marks.map((m) => [m.name, m.type, m.wall, m.zone, m.s, m.d, m.acc, m.n, m.lat, m.lon, m.time].join(";"))];
+    if (track.length) {
+      lines.push("", `TRASEU (${track.length} puncte)`, "ora;precizie_m;lat;lon;metri_spre_securitate;abatere_laterala_m");
+      for (const f of track) {
+        const ax = toAxis(f.lat, f.lon);
+        lines.push([new Date(f.t).toLocaleTimeString("ro-RO"), f.acc, f.lat, f.lon, ax.s.toFixed(1), ax.d.toFixed(1)].join(";"));
+      }
+    }
+    return lines.join("\n");
+  }
+
+  for (const [label, type] of CHIPS) {
     const b = document.createElement("button");
-    b.type = "button"; b.textContent = name; b.onclick = () => save(name);
+    b.type = "button"; b.textContent = label;
+    b.onclick = () => { $("name").value = label; $("type").value = type; say(`Alege peretele și zona, apoi apasă „Salvează locul”.`); };
     $("chips").appendChild(b);
   }
-  $("mark").onclick = () => { const v = $("label").value.trim(); if (v) { save(v); $("label").value = ""; } };
-
+  $("save").onclick = save;
+  $("undo").onclick = () => { const m = marks.pop(); persist(); renderTable(); say(m ? `Șters: ${m.name}` : "Nu e nimic de șters."); };
+  $("clear").onclick = () => {
+    if (!confirm("Ștergi toate locurile salvate și traseul înregistrat?")) return;
+    marks = []; track = []; persist(); renderTable(); render(); $("out").hidden = true; say("Am golit tot.");
+  };
   $("copy").onclick = async () => {
-    const text = ["punct;ora;precizie_m;lat;lon",
-      ...marks.map((m) => [m.name, m.time, Math.round(m.acc), m.lat.toFixed(6), m.lon.toFixed(6)].join(";"))].join("\n");
-    try { await navigator.clipboard.writeText(text); $("copied").textContent = "Copiat. Lipiti-l in chat."; }
-    catch { $("copied").textContent = text; }
+    const text = exportText(), out = $("out");
+    out.value = text; out.hidden = false;
+    try { await navigator.clipboard.writeText(text); say("Copiat. Lipește textul în chat."); }
+    catch { out.focus(); out.select(); say("Nu am putut copia automat: textul e selectat mai jos, copiază-l manual."); }
   };
 
+  setInterval(() => {
+    if (last) $("age").textContent = Math.round((Date.now() - last.t) / 1000) + " s în urmă";
+  }, 1000);
+
+  load();
+  renderTable();
+  render();
+
   if (!window.isSecureContext) {
-    onErr({ message: "Pagina nu e pe HTTPS, deci browserul blocheaza locatia. Deschideti linkul https." });
+    onErr({ message: "Pagina nu e pe HTTPS, deci browserul blochează locația. Deschide linkul https://." });
   } else if (!("geolocation" in navigator)) {
-    onErr({ message: "Browserul nu suporta localizarea." });
+    onErr({ message: "Browserul nu suportă localizarea." });
   } else {
     navigator.geolocation.watchPosition(onPos, onErr, { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
     if ("wakeLock" in navigator) navigator.wakeLock.request("screen").catch(() => {});

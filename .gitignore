@@ -218,3 +218,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Bilet de exemplu generat de tools/make_demo_ticket.py
+tools/bilet-demo*.png
