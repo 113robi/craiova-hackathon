@@ -7,6 +7,7 @@ import datetime as dt
 import hashlib
 
 import streamlit as st
+from streamlit.errors import StreamlitAPIException
 
 from agent import chat
 from airport_core import (FLIGHTS, NODES, STATES, apply_live_position, flight_status, get_route, new_session,
@@ -266,6 +267,19 @@ def refresh_route():
     st.session_state.route = r["path"] if r.get("reachable") and r["path"][-1] != S["position"] else []
 
 
+def rerun_map():
+    """Redeseneaza harta: doar fragmentul, daca se poate, altfel toata pagina.
+
+    st.rerun(scope="fragment") arunca exceptie cand fragmentul ruleaza ca parte a unei rulari complete
+    a paginii. Asa se intampla cand o pozitie GPS ajunge odata cu incarcarea paginii, un buton din
+    stanga sau un mesaj in chat: Streamlit le uneste intr-o singura rulare completa.
+    """
+    try:
+        st.rerun(scope="fragment")
+    except StreamlitAPIException:
+        st.rerun()
+
+
 def live_target():
     """Tinta traseului, trimisa hartii live doar daca e in zona in care se afla pasagerul."""
     target = st.session_state.get("nav_target")
@@ -291,7 +305,7 @@ def map_panel():
         st.session_state.suggest_security = moved["suggest_security"]
         if moved["changed"]:
             refresh_route()
-            st.rerun(scope="fragment")  # redeseneaza harta cu noua pozitie / noul traseu
+            rerun_map()  # redeseneaza harta cu noua pozitie / noul traseu
 
     target = st.session_state.get("nav_target")
     if target and S["position"] == target:
@@ -317,7 +331,7 @@ def map_panel():
         if st.session_state.route and st.button("✖ Sterge traseul", key="clear_route"):
             st.session_state.route, st.session_state.highlight = [], []
             st.session_state.nav_target = None
-            st.rerun(scope="fragment")
+            rerun_map()
 
 
 with col_map:

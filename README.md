@@ -8,6 +8,7 @@ Proiect realizat la Craiova Hackathon V2.0, provocarea *Autopilot* (AI, automati
 
 - **Hartă reală.** Contururile clădirilor din OpenStreetMap, la scară: holul vechi cu capătul tăiat în diagonală, anexa cu toaleta, clădirea alipită cu securitatea și poarta. Drumul de mers urmează traseul înregistrat pe teren și se curbează spre poartă. Locurile sunt măsurate pe teren.
 - **Localizare live.** Telefonul își trimite poziția (GPS + Wi-Fi, din browser). Punctul „Ești aici” merge pe drumul real, cu un cerc care arată precizia, și intră în locul spre care ai traseu când ajungi la el. Butonul **„Sunt la intrare”** corectează abaterea GPS din ziua respectivă.
+- **Harta se întoarce după telefon.** Când stai cu fața spre intrare, harta se rotește singură (după busolă), ca dreapta de pe ecran să fie și dreapta ta. Un con albastru arată încotro e îndreptat telefonul.
 - **Trasee la un click.** Apeși pe un loc de pe hartă sau pe butoanele „Du-mă la” și primești traseul de unde ești, fără chatbot. Traseul se recalculează când te miști.
 - **Scanarea biletului.** Faci o poză biletului de îmbarcare, iar aplicația citește zborul, data și orele tipărite (plecare, îmbarcare, închiderea porții). Confirmi ce a citit și primești numărătoarea până la îmbarcare, după ora reală a telefonului.
 - **Chat AI în română.** Poți întreba „Unde pot mânca?”, „Cât timp am până la îmbarcare?” sau „Mă pot întoarce la check-in?”. Răspunsul și traseul de pe hartă vin din rezultatele codului, nu din textul inventat de model.
@@ -18,8 +19,8 @@ Proiect realizat la Craiova Hackathon V2.0, provocarea *Autopilot* (AI, automati
 
 ```
 app.py          Streamlit: harta, biletul, chatul, etapele calatoriei
- ├── live_map.py   componenta JavaScript: GPS din telefon, click pe harta, "Sunt la intrare"
- ├── map_svg.py    harta terminalului (SVG la scara, locuri pe care se poate apasa)
+ ├── live_map.py   componenta JavaScript: GPS si busola din telefon, click pe harta, "Sunt la intrare"
+ ├── map_svg.py    harta terminalului (SVG la scara, in doua orientari, locuri pe care se poate apasa)
  ├── ticket.py     citirea biletului de imbarcare dintr-o poza (Gemini, raspuns JSON validat)
  ├── agent.py      Gemini cu function calling: chat(session, message) -> text + traseu + locuri evidentiate
  └── airport_core.py  nucleul: geometria terminalului, graful, Dijkstra, etapele, zborurile, tool-uri
@@ -46,6 +47,7 @@ app.py          Streamlit: harta, biletul, chatul, etapele calatoriei
    - o deplasare laterală mare (peste 10 m) lângă capătul din stânga înseamnă că ai intrat pe holul spre toaletă.
 5. Python primește poziția **doar când se schimbă zona** sau locul, ca pagina să nu se reîncarce continuu. Apoi mută pasagerul pe nodul potrivit, ținând cont de etapă (`locate`, `apply_live_position`), și recalculează traseul.
 6. **„Sunt la intrare”** mută estimarea curentă la `s = 0`, fixează referința laterală și aplică aceeași corecție tuturor citirilor următoare. Butonul apare doar la cel mult 20 m de intrare și înainte de securitate, ca să nu poată fi apăsat din greșeală la poartă.
+7. **Orientarea hărții.** Harta e desenată cu intrarea jos (aproape nordul sus), cum vezi holul când intri din parcare. O hartă fixă e văzută în oglindă de cine stă cu fața spre intrare: mergi spre dreapta ta (spre vest), iar punctul pleacă spre stânga ecranului. De aceea, cât timp localizarea live e pornită, aplicația citește busola telefonului (`deviceorientationabsolute` pe Android, `webkitCompassHeading` pe iPhone). Când telefonul e îndreptat spre intrare (spre sud), arată harta rotită cu 180°, cu textele drepte (`map_svg.py` desenează ambele orientări în același SVG). Harta se întoarce doar când telefonul e la peste 125° față de „sus”-ul ei și revine sub 55°, după 0,8 s de confirmare. Așa nu se rotește cât timp mergi de-a lungul holului. Conul albastru arată încotro e îndreptat telefonul. Butonul **„Întoarce harta”** o rotește manual (laptop, telefon fără busolă). Pe iPhone, busola pornește la apăsarea pe **„Pornește localizarea live”** sau, dacă localizarea a pornit singură, pe **„Rotește după busolă”**.
 
 Măsurători făcute în terminalul vechi (31.10.2026):
 
@@ -125,6 +127,7 @@ python agent.py            # 4 intrebari reale catre Gemini (consuma cereri din 
 ## Limitări cunoscute
 
 - Precizia GPS în interior ajunge pe lungimea holului, dar nu și pe lățime. De aceea punctul stă pe drumul de mers și intră lateral într-un loc doar la sosire sau la drumul spre toaletă. Traseul pornește din cel mai apropiat punct al drumului.
+- Busola poate fi deviată de structurile de metal din clădire (de exemplu lângă scanerele de la securitate). Harta se întoarce doar când direcția e clară, iar dacă tot greșește, butonul „Întoarce harta” o fixează manual.
 - Cheia gratuită Gemini permite 15 cereri pe minut. Un mesaj în chat consumă 2–3 cereri, o scanare de bilet consumă una. Traseele din click pe hartă nu consumă nimic. La eroare sau la depășirea limitei, aplicația afișează un mesaj de rezervă.
 - Tunelul `trycloudflare` e pentru demo, nu pentru producție.
 
@@ -132,8 +135,3 @@ python agent.py            # 4 intrebari reale catre Gemini (consuma cereri din 
 
 - Localizare mai precisă prin infrastructura aeroportului: Wi-Fi cu localizare sau beacon-uri Bluetooth. Restul sistemului rămâne neschimbat, pentru că primește doar poziția.
 - Date reale de zbor (întârzieri, poartă) de la aeroport și reguli de îmbarcare verificate cu compania.
-
-## Documente de lucru
-
-- `plan-hackathon.md`: planul inițial, cercetarea și împărțirea pe roluri.
-- `taskuri.md`: lista de taskuri, în ordine.
