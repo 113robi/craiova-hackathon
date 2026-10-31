@@ -2,17 +2,23 @@
 
 Ce face in browser (JavaScript):
   1. porneste localizarea doar dupa acordul pasagerului (buton) sau daca acordul exista deja;
-  2. transforma (lat, lon) in s = metri de la intrare, cu aceeasi formula ca airport_core.geo_to_s;
-  3. ignora citirile slabe (precizie > max_acc) si netezeste restul cu un filtru Kalman 1D;
-  4. muta punctul "Esti aici" pe harta la fiecare citire (fara Python, fara reincarcare);
-  5. trimite pozitia la Python DOAR cand se schimba nodul cel mai apropiat de pe axa holului
-     sau cand se trece pragul de dupa securitate - ca aplicatia sa nu se reincarce continuu;
+  2. transforma (lat, lon) in s = metri de la intrare de-a lungul holului si d = pozitia laterala,
+     cu aceeasi formula ca airport_core.geo_to_s;
+  3. ignora citirile slabe (precizie > max_acc) si netezeste restul cu filtre Kalman 1D (pe s si pe d);
+  4. deseneaza punctul "Esti aici" pe DRUMUL REAL (care se curbeaza), la distanta s de-a lungul lui.
+     GPS-ul lateral e prea imprecis in interior ca sa fie folosit direct; de aceea punctul se muta
+     lateral doar cand stim sigur unde e pasagerul:
+       - a ajuns la locul spre care are traseu (la cel mult snap_m metri de-a lungul holului);
+       - o deplasare laterala mare langa capatul din stanga = a intrat pe holul spre toaleta
+         (doar dupa "Sunt la intrare", care fixeaza si referinta laterala);
+  5. trimite pozitia la Python DOAR cand se schimba nodul cel mai apropiat, pragul de dupa securitate
+     sau locul in care a ajuns - ca aplicatia sa nu se reincarce continuu;
   6. "Sunt la intrare": corecteaza abaterea GPS din ziua respectiva (pozitia curenta devine intrarea);
   7. click (sau Enter) pe un loc de pe harta -> trimite id-ul locului la Python, care deseneaza traseul.
 
 Contract:
-    live_map(svg, state, key="live_map") -> {"fix": dict | None, "go": str | None}
-        fix = {"s": metri de la intrare, "acc": precizie in metri, "t": timestamp ms}
+    live_map(svg, state, target=None, key="live_map") -> {"fix": dict | None, "go": str | None}
+        fix = {"s": metri de la intrare, "acc": precizie, "t": timestamp ms, "at": id loc sau None}
         go  = id-ul locului apasat pe harta (doar in rerun-ul declansat de click)
 
 Localizarea merge doar pe HTTPS sau pe http://localhost (regula browserelor).
@@ -20,12 +26,16 @@ Localizarea merge doar pe HTTPS sau pe http://localhost (regula browserelor).
 
 import streamlit as st
 
-from airport_core import (CORRIDOR, CORRIDOR_Y, GEO_AXIS, MAP_X0, NODES, PX_PER_M, SECURITY_PASSED_S, STATES,
+from airport_core import (CORRIDOR, GEO_AXIS, MAP_X0, MAP_Y0, NODES, PX_PER_M, SECURITY_PASSED_S, STATES,
                           TERMINAL_LENGTH_M, WEST_END_S)
 
-MAX_ACCURACY_M = 40   # citirile mai slabe sunt ignorate (iPhone-ul a avut si 50 m in test)
-WALK_VARIANCE = 9     # m^2/s pentru filtrul Kalman: ~3 m/s, mai repede decat merge un pasager
+MAX_ACCURACY_M = 40     # citirile mai slabe sunt ignorate (iPhone-ul a avut si 50 m in test)
+WALK_VARIANCE = 9       # m^2/s pentru filtrul Kalman: ~3 m/s, mai repede decat merge un pasager
 CALIBRATION_MAX_M = 20  # "Sunt la intrare" apare doar cand GPS-ul te arata la cel mult 20 m de intrare
+SNAP_M = 3              # la cel mult 3 m (de-a lungul holului) de tinta traseului, punctul intra in loc
+# Holul spre toaleta: deplasare laterala de cel putin 10 m fata de intrare, langa capatul din stanga.
+# In masuratori, mersul pe hol a variat cu +-5 m lateral, iar drumul spre toaleta a ajuns la +18 m.
+TOILET_DETECT = {"id": "toilet", "s_min": -16, "s_max": 3, "rel_d": 10}
 
 _CSS = """
 .acm-root { display: flex; flex-direction: column; gap: 8px; }
@@ -49,13 +59,17 @@ export default function (component) {
 
   // Starea globala supravietuieste re-randarilor componentei (Streamlit o reapeleaza la fiecare rerun).
   const G = (window.__acmGeo ||= {
-    watchId: null, kf: null, est: null, raw: null, status: "idle", error: "", sentKey: null,
-    subs: new Set(), send: null, data: null, ticker: null, offset: undefined,
+    watchId: null, kf: null, kd: null, est: null, raw: null, status: "idle", error: "", sentKey: null,
+    subs: new Set(), send: null, data: null, ticker: null, offset: undefined, dref: undefined,
   });
   G.send = setStateValue;
   G.data = data;
   if (G.offset === undefined) {   // corectia "Sunt la intrare" ramane valabila daca reincarci pagina
     try { G.offset = parseFloat(sessionStorage.getItem("acm-offset")) || 0; } catch { G.offset = 0; }
+  }
+  if (G.dref === undefined) {     // referinta laterala, fixata tot la "Sunt la intrare"
+    try { const v = parseFloat(sessionStorage.getItem("acm-dref")); G.dref = Number.isFinite(v) ? v : null; }
+    catch { G.dref = null; }
   }
 
   let root = parentElement.querySelector(".acm-root");
@@ -112,15 +126,20 @@ export default function (component) {
 
   function stop() {
     if (G.watchId !== null) navigator.geolocation.clearWatch(G.watchId);
-    G.watchId = null; G.kf = null; G.est = null; G.status = "idle"; G.sentKey = null;
+    G.watchId = null; G.kf = null; G.kd = null; G.est = null; G.status = "idle"; G.sentKey = null;
     notify();
   }
 
-  // Pasagerul sta la intrare: estimarea curenta devine s = 0, iar corectia se aplica tuturor citirilor.
+  // Pasagerul sta la intrare: estimarea curenta devine s = 0 (corectie pentru toate citirile urmatoare),
+  // iar pozitia laterala de acum devine referinta pentru detectarea drumului spre toaleta.
   function calibrate() {
     if (!G.kf) return;
     G.offset = (G.offset || 0) - G.kf.s;
-    try { sessionStorage.setItem("acm-offset", String(G.offset)); } catch {}
+    G.dref = G.kd ? G.kd.s : null;
+    try {
+      sessionStorage.setItem("acm-offset", String(G.offset));
+      sessionStorage.setItem("acm-dref", String(G.dref));
+    } catch {}
     const now = Date.now();
     G.kf = { ...G.kf, s: 0, t: now };
     G.est = { ...G.est, s: 0, t: now };
@@ -129,11 +148,20 @@ export default function (component) {
     notify();
   }
 
-  function toS(lat, lon) {
+  function toSD(lat, lon) {
     const a = G.data.axis;
     const ex = (lon - a.lon0) * 111320 * a.k;
     const ny = (lat - a.lat0) * 111320;
-    return ex * a.ux + ny * a.uy + (G.offset || 0);
+    return { s: ex * a.ux + ny * a.uy + (G.offset || 0), d: -ex * a.uy + ny * a.ux };
+  }
+
+  // Filtru Kalman 1D: citirile precise conteaza mai mult, iar dupa o pauza
+  // (pasagerul poate merge ~3 m/s) estimarea se muta repede la citirea noua.
+  function kalman(prev, z, R, now, q) {
+    if (!prev) return { s: z, P: R, t: now };
+    const P = prev.P + q * Math.max(0, (now - prev.t) / 1000), K = P / (P + R);
+    const next = { s: prev.s + K * (z - prev.s), P: (1 - K) * P, t: now };
+    return Number.isFinite(next.s) ? next : { s: z, P: R, t: now };  // nu lasam filtrul sa se blocheze
   }
 
   function onFix(p) {
@@ -141,19 +169,12 @@ export default function (component) {
     G.raw = { acc, t: now };
     if (acc > d.max_acc) { G.status = "weak"; return notify(); }
     G.status = "live"; G.error = "";
-    // Filtru Kalman 1D: citirile precise conteaza mai mult, iar dupa o pauza
-    // (pasagerul poate merge ~3 m/s) estimarea se muta repede la citirea noua.
-    const z = toS(p.coords.latitude, p.coords.longitude), R = Math.max(acc, 3) ** 2;
-    if (!Number.isFinite(z)) return;
-    if (!G.kf) G.kf = { s: z, P: R, t: now };
-    else {
-      const q = Number.isFinite(d.walk_var) ? d.walk_var : 9;
-      const P = G.kf.P + q * Math.max(0, (now - G.kf.t) / 1000);
-      const K = P / (P + R);
-      G.kf = { s: G.kf.s + K * (z - G.kf.s), P: (1 - K) * P, t: now };
-      if (!Number.isFinite(G.kf.s)) G.kf = { s: z, P: R, t: now };  // nu lasam filtrul sa se blocheze
-    }
-    G.est = { s: G.kf.s, acc, t: now };
+    const z = toSD(p.coords.latitude, p.coords.longitude), R = Math.max(acc, 3) ** 2;
+    if (!Number.isFinite(z.s) || !Number.isFinite(z.d)) return;
+    const q = Number.isFinite(d.walk_var) ? d.walk_var : 9;
+    G.kf = kalman(G.kf, z.s, R, now, q);
+    G.kd = kalman(G.kd, z.d, R, now, q);
+    G.est = { s: G.kf.s, d: G.kd.s, acc, t: now };
     maybeSend();
     notify();
   }
@@ -165,14 +186,38 @@ export default function (component) {
     notify();
   }
 
+  // Pozitia laterala a drumului real la distanta s (interpolare intre punctele drumului).
+  function pathD(s) {
+    const p = G.data.path;
+    if (s <= p[0][0]) return p[0][1];
+    for (let i = 1; i < p.length; i++) {
+      if (s <= p[i][0]) {
+        const [s0, d0] = p[i - 1], [s1, d1] = p[i];
+        return d0 + (d1 - d0) * (s - s0) / (s1 - s0);
+      }
+    }
+    return p[p.length - 1][1];
+  }
+
+  // Unde desenam pasagerul: in locul in care a ajuns, sau pe drumul real.
+  function spot() {
+    const d = G.data, s = Math.min(Math.max(G.est.s, d.s_min), d.s_max);
+    const t = d.target;
+    if (t && Math.abs(G.est.s - t.s) <= d.snap_m) return { s: t.s, dd: t.d, at: t.id };
+    const w = d.toilet;
+    if (w && !d.passed && G.dref !== null && G.est.s >= w.s_min && G.est.s <= w.s_max &&
+        G.est.d - G.dref >= w.rel_d) return { s: w.s, dd: w.d, at: w.id };
+    return { s, dd: pathD(s), at: null };
+  }
+
   function maybeSend() {
-    const d = G.data, s = G.est.s;
+    const d = G.data, s = G.est.s, sp = spot();
     let best = d.corridor[0];
     for (const n of d.corridor) if (Math.abs(n.s - s) < Math.abs(best.s - s)) best = n;
-    const key = best.id + "|" + d.thresholds.map((t) => (s >= t ? 1 : 0)).join("");
+    const key = best.id + "|" + d.thresholds.map((t) => (s >= t ? 1 : 0)).join("") + "|" + (sp.at || "");
     if (key === G.sentKey || !G.send) return;
     G.sentKey = key;
-    G.send("fix", { s: Math.round(s * 10) / 10, acc: Math.round(G.est.acc), t: G.est.t });
+    G.send("fix", { s: Math.round(s * 10) / 10, acc: Math.round(G.est.acc), t: G.est.t, at: sp.at });
   }
 
   function notify() { G.subs.forEach((f) => f()); }
@@ -183,8 +228,8 @@ export default function (component) {
     if (live) {
       live.replaceChildren();
       if (fresh) {
-        const s = Math.min(Math.max(G.est.s, d.s_min), d.s_max);
-        const x = d.x0 + s * d.px, y = d.y;
+        const sp = spot();
+        const x = d.x0 + sp.s * d.px, y = d.y0 - sp.dd * d.px;
         live.append(
           el("circle", { cx: x, cy: y, r: Math.min(G.est.acc * d.px, 420), fill: "#2563eb", "fill-opacity": 0.12,
                          stroke: "#2563eb", "stroke-opacity": 0.35, "stroke-width": 2, "pointer-events": "none" }),
@@ -237,14 +282,17 @@ def _get_component():
     return _component
 
 
-def live_map(svg: str, state: str, key: str = "live_map") -> dict:
+def live_map(svg: str, state: str, target: str | None = None, key: str = "live_map") -> dict:
+    """`target` = locul spre care pasagerul are traseu (punctul intra in el cand ajunge)."""
     passed = STATES.index(state) >= STATES.index("THROUGH_SECURITY")
+    toilet = NODES[TOILET_DETECT["id"]]
     data = {
         "svg": svg,
         "axis": GEO_AXIS,
         "x0": MAP_X0,
+        "y0": MAP_Y0,
         "px": PX_PER_M,
-        "y": CORRIDOR_Y,
+        "path": [[NODES[n]["s"], NODES[n]["d"]] for n in CORRIDOR],
         "corridor": [{"id": n, "s": NODES[n]["s"]} for n in CORRIDOR],
         "thresholds": [SECURITY_PASSED_S],
         # dupa securitate punctul nu se mai deseneaza in zona publica
@@ -254,6 +302,10 @@ def live_map(svg: str, state: str, key: str = "live_map") -> dict:
         "walk_var": WALK_VARIANCE,
         "passed": passed,
         "cal_max_m": CALIBRATION_MAX_M,
+        "snap_m": SNAP_M,
+        "target": ({"id": target, "s": NODES[target]["s"], "d": NODES[target]["d"]}
+                   if target in NODES else None),
+        "toilet": {**TOILET_DETECT, "s": toilet["s"], "d": toilet["d"]},
     }
     result = _get_component()(key=key, data=data, default={"fix": None},
                               on_fix_change=lambda: None, on_go_change=lambda: None)

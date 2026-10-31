@@ -50,6 +50,7 @@ def reset():
     st.session_state.route = []
     st.session_state.highlight = []
     st.session_state.suggest_security = False  # GPS-ul arata pasagerul dupa control, neconfirmat
+    st.session_state.nav_target = None         # locul spre care are traseu (ramane si dupa ce ajunge)
     st.session_state.ticket_result = None      # biletul citit, inca neconfirmat
     st.session_state.ticket_hash = None        # ca aceeasi poza sa nu fie trimisa de doua ori la Gemini
     st.session_state.upload_n = 0              # schimbarea cheii goleste campul de incarcare
@@ -98,6 +99,7 @@ def navigate_to(node_id):
     name = NODES[node_id]["name"]
     st.session_state.messages.append({"role": "user", "content": f"Du-ma la: {name}"})
     r = get_route(S, node_id)
+    st.session_state.nav_target = node_id if r.get("reachable") else None
     if r.get("reachable") and r["distance_m"] == 0:
         st.session_state.route, st.session_state.highlight = [], [node_id]
         say(f"Esti deja la **{name}**.")
@@ -152,6 +154,7 @@ with st.sidebar:
             res = tool_advance_state(S, state)
             if res["ok"]:
                 st.session_state.route, st.session_state.highlight = [], []
+                st.session_state.nav_target = None
                 say(f"Etapa actualizata: **{STATE_LABELS[state]}**. {next_step(S)['step']}")
                 st.rerun()
             else:
@@ -176,7 +179,7 @@ has_ticket = bool(S.get("ticket") and S["ticket"]["flight"] == S["flight"])
 if fs.get("found") and ((fs["delay_min"] or 0) > 0 or has_ticket):
     (st.warning if (fs["delay_min"] or 0) > 0 else st.info)(flight_summary(fs))
 
-with st.expander("\U0001F3AB Scaneaza biletul de imbarcare", expanded=not S.get("ticket")):
+with st.expander("\U0001F3AB Scaneaza biletul de imbarcare", expanded=bool(st.session_state.ticket_result)):
     st.caption("Fa o poza biletului (pe hartie sau pe ecranul altui telefon) sau incarca o captura de ecran. "
                "Citim zborul si orele tiparite; numele tau nu se pastreaza si poza nu se salveaza.")
     upload = st.file_uploader("Poza biletului", type=["png", "jpg", "jpeg", "webp"],
@@ -243,6 +246,7 @@ with col_chat:
         say(result["text"])
         st.session_state.route = result["route"]
         st.session_state.highlight = result["highlight"]
+        st.session_state.nav_target = result["route"][-1] if result["route"] else None
 
     with messages_box:
         if not st.session_state.messages:
@@ -262,11 +266,20 @@ def refresh_route():
     st.session_state.route = r["path"] if r.get("reachable") and r["path"][-1] != S["position"] else []
 
 
+def live_target():
+    """Tinta traseului, trimisa hartii live doar daca e in zona in care se afla pasagerul."""
+    target = st.session_state.get("nav_target")
+    if target not in NODES:
+        return None
+    zone_now = "airside" if STATES.index(S["state"]) >= STATES.index("THROUGH_SECURITY") else "landside"
+    return target if NODES[target]["zone"] == zone_now else None
+
+
 @st.fragment
 def map_panel():
     # Fragment: o citire GPS noua reincarca doar harta, nu si chatul.
     svg = render_map(S["position"], st.session_state.route, st.session_state.highlight)
-    res = live_map(svg, S["state"])
+    res = live_map(svg, S["state"], target=live_target())
 
     if res["go"]:
         navigate_to(res["go"])  # click pe un loc de pe harta
@@ -274,11 +287,15 @@ def map_panel():
     fix = res["fix"]
     if fix and fix.get("t") != st.session_state.get("last_fix_t"):
         st.session_state.last_fix_t = fix["t"]
-        moved = apply_live_position(S, float(fix["s"]))
+        moved = apply_live_position(S, float(fix["s"]), fix.get("at"))
         st.session_state.suggest_security = moved["suggest_security"]
         if moved["changed"]:
             refresh_route()
             st.rerun(scope="fragment")  # redeseneaza harta cu noua pozitie / noul traseu
+
+    target = st.session_state.get("nav_target")
+    if target and S["position"] == target:
+        st.success(f"Ai ajuns: **{NODES[target]['name']}**.")
 
     if st.session_state.get("suggest_security") and STATES.index(S["state"]) < STATES.index("THROUGH_SECURITY"):
         st.info("Localizarea arata ca ai trecut de controlul de securitate. Confirmi?")
@@ -288,6 +305,7 @@ def map_panel():
             tool_advance_state(S, "THROUGH_SECURITY")
             st.session_state.suggest_security = False
             st.session_state.route, st.session_state.highlight = [], []
+            st.session_state.nav_target = None
             say(f"Etapa actualizata: **{STATE_LABELS['THROUGH_SECURITY']}**. {next_step(S)['step']}")
             st.rerun()  # reincarca toata pagina: etapele din stanga si chatul
 
@@ -298,6 +316,7 @@ def map_panel():
                 navigate_to(node_id)
         if st.session_state.route and st.button("✖ Sterge traseul", key="clear_route"):
             st.session_state.route, st.session_state.highlight = [], []
+            st.session_state.nav_target = None
             st.rerun(scope="fragment")
 
 

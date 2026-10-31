@@ -6,8 +6,8 @@ Proiect realizat la Craiova Hackathon V2.0, provocarea *Autopilot* (AI, automati
 
 ## Ce face
 
-- **Hartă măsurată pe teren.** Holul terminalului, desenat la scară: intrarea de pe peretele dinspre drum, partea din stânga cu toaleta, check-in-ul, biroul de informații, securitatea, cafeneaua și poarta.
-- **Localizare live.** Telefonul își trimite poziția (GPS + Wi-Fi, din browser). Punctul „Ești aici” se mișcă pe hartă, cu un cerc care arată precizia. Butonul **„Sunt la intrare”** corectează abaterea GPS din ziua respectivă.
+- **Hartă reală.** Contururile clădirilor din OpenStreetMap, la scară: holul vechi cu capătul tăiat în diagonală, anexa cu toaleta, clădirea alipită cu securitatea și poarta. Drumul de mers urmează traseul înregistrat pe teren și se curbează spre poartă. Locurile sunt măsurate pe teren.
+- **Localizare live.** Telefonul își trimite poziția (GPS + Wi-Fi, din browser). Punctul „Ești aici” merge pe drumul real, cu un cerc care arată precizia, și intră în locul spre care ai traseu când ajungi la el. Butonul **„Sunt la intrare”** corectează abaterea GPS din ziua respectivă.
 - **Trasee la un click.** Apeși pe un loc de pe hartă sau pe butoanele „Du-mă la” și primești traseul de unde ești, fără chatbot. Traseul se recalculează când te miști.
 - **Scanarea biletului.** Faci o poză biletului de îmbarcare, iar aplicația citește zborul, data și orele tipărite (plecare, îmbarcare, închiderea porții). Confirmi ce a citit și primești numărătoarea până la îmbarcare, după ora reală a telefonului.
 - **Chat AI în română.** Poți întreba „Unde pot mânca?”, „Cât timp am până la îmbarcare?” sau „Mă pot întoarce la check-in?”. Răspunsul și traseul de pe hartă vin din rezultatele codului, nu din textul inventat de model.
@@ -39,11 +39,13 @@ app.py          Streamlit: harta, biletul, chatul, etapele calatoriei
 ## Cum funcționează localizarea
 
 1. Browserul dă latitudinea, longitudinea și precizia, prin `navigator.geolocation.watchPosition`.
-2. Coordonatele se proiectează pe axa holului. Rezultatul e `s`, adică metri de la intrare: negativ la stânga intrării, pozitiv spre securitate (`geo_to_s` în `airport_core.py`, aceeași formulă și în JS).
-3. Citirile cu precizie peste 40 m se ignoră. Restul trec printr-un filtru Kalman 1D, ca punctul să nu sară.
-4. Punctul se mișcă pe hartă direct în browser. Python primește poziția **doar când se schimbă zona** (cel mai apropiat punct de pe axa holului), ca pagina să nu se reîncarce continuu.
-5. Python mută pasagerul pe cel mai apropiat nod, ținând cont de etapă (`locate`, `apply_live_position`), și recalculează traseul.
-6. **„Sunt la intrare”** mută estimarea curentă la `s = 0` și aplică aceeași corecție tuturor citirilor următoare. Butonul apare doar la cel mult 20 m de intrare și înainte de securitate, ca să nu poată fi apăsat din greșeală la poartă.
+2. Coordonatele se transformă în metri: `s` de-a lungul holului (negativ la stânga intrării, pozitiv spre securitate) și `d` de-a curmezișul lui (`geo_to_s` în `airport_core.py`, aceeași formulă și în JS).
+3. Citirile cu precizie peste 40 m se ignoră. Restul trec prin filtre Kalman 1D, ca punctul să nu sară.
+4. **Pe lungime**, punctul urmează GPS-ul și stă pe drumul real, care se curbează. **Pe lățime**, GPS-ul din interior e prea imprecis (la măsurători, intrarea a ieșit mai „sus” decât check-in-ul), așa că punctul se mută lateral doar când știm sigur unde ești:
+   - când ajungi la cel mult 3 m de locul spre care ai traseu, punctul intră în loc și apare „Ai ajuns”;
+   - o deplasare laterală mare (peste 10 m) lângă capătul din stânga înseamnă că ai intrat pe holul spre toaletă.
+5. Python primește poziția **doar când se schimbă zona** sau locul, ca pagina să nu se reîncarce continuu. Apoi mută pasagerul pe nodul potrivit, ținând cont de etapă (`locate`, `apply_live_position`), și recalculează traseul.
+6. **„Sunt la intrare”** mută estimarea curentă la `s = 0`, fixează referința laterală și aplică aceeași corecție tuturor citirilor următoare. Butonul apare doar la cel mult 20 m de intrare și înainte de securitate, ca să nu poată fi apăsat din greșeală la poartă.
 
 Măsurători făcute în terminalul vechi (31.10.2026):
 
@@ -73,11 +75,12 @@ python tools/make_demo_ticket.py --plecare 19:30
 
 ## Ce e real și ce e simulat
 
-- **Măsurat pe teren:** forma holului (~20 m lățime, de la ~8 m la stânga intrării până la poarta, la 67 m), intrarea, toaleta (la stânga, pe peretele opus, la capătul unui hol lateral de 10–15 m), check-in-ul (14 m), biroul de informații (30 m), securitatea (~50 m), cafeneaua (imediat după securitate) și Poarta 1.
+- **Măsurat pe teren:** drumul de mers (de la ~8 m la stânga intrării până la poartă, 82 m de la intrare), intrarea, toaleta (la stânga, pe peretele opus, la capătul unui hol lateral de 10–15 m), check-in-ul (14 m), biroul de informații (30 m), securitatea (~50 m), cafeneaua (imediat după securitate) și Poarta 1.
+- **Din OpenStreetMap:** contururile clădirilor (pereții de pe hartă).
 - **Simulat:** **KFC** (nu există în terminal, e pus doar pentru demo), starea live a zborurilor (întârzierea lui `W6 5678`), regulile de îmbarcare (`RULES`, folosite doar când biletul nu are orele tipărite).
 - **Necunoscut:** programul cafenelei. Agentul nu spune că un loc e deschis dacă nu știe.
 
-Ca să muți sau să adaugi un loc, modifici lista `PLACES` din `airport_core.py`: `s` (metri de la intrare, negativ la stânga), `side` (`+1` peretele opus intrării, `-1` peretele cu intrarea) și distanța până la axa holului. Harta și traseele se actualizează singure.
+Ca să muți sau să adaugi un loc, modifici în `airport_core.py` lista `SIDE_PLACES` (locurile din lateral, cu coordonatele `(s, d)` în metri și punctul de drum de care sunt legate) sau `MAIN_PATH` (drumul de mers). `s` e distanța de la intrare (negativ la stânga), iar `d` e poziția laterală (pozitiv spre peretele opus intrării). Harta, distanțele și traseele se actualizează singure. Autotestul verifică dacă fiecare loc e în conturul clădirii.
 
 ## Instalare și rulare
 
@@ -121,7 +124,7 @@ python agent.py            # 4 intrebari reale catre Gemini (consuma cereri din 
 
 ## Limitări cunoscute
 
-- Precizia GPS în interior ajunge pentru **zone** (public, securitate, poartă), nu pentru locuri la un metru distanță. Punctul de pe hartă e exact unde e telefonul, iar traseul pornește din cel mai apropiat punct de pe axa holului.
+- Precizia GPS în interior ajunge pe lungimea holului, dar nu și pe lățime. De aceea punctul stă pe drumul de mers și intră lateral într-un loc doar la sosire sau la drumul spre toaletă. Traseul pornește din cel mai apropiat punct al drumului.
 - Cheia gratuită Gemini permite 15 cereri pe minut. Un mesaj în chat consumă 2–3 cereri, o scanare de bilet consumă una. Traseele din click pe hartă nu consumă nimic. La eroare sau la depășirea limitei, aplicația afișează un mesaj de rezervă.
 - Tunelul `trycloudflare` e pentru demo, nu pentru producție.
 

@@ -1,6 +1,6 @@
 """Harta terminalului ca SVG, desenata la scara din datele din airport_core:
-  1. cladirea: holul (zone colorate + pereti), anexa cu toaleta, usa de la intrare, repere exterioare
-  2. traseul: polyline prin nodurile din `route`
+  1. cladirile: contururile reale (OpenStreetMap), trecerile prin pereti, zona fara acces, securitatea
+  2. traseul: polyline prin nodurile din `route` (pe drumul real, care se curbeaza)
   3. locurile, `highlight` (portocaliu), "Esti aici" (rosu)
 
 Pe locuri se poate apasa: fiecare e un <g class="acm-place" data-node="<id>">; live_map.py
@@ -15,8 +15,8 @@ Previzualizare fara Streamlit:  python map_svg.py   -> scrie un .html si afiseaz
 
 from html import escape
 
-from airport_core import (CLICKABLE, CORRIDOR_Y, DRAW_S_MAX, DRAW_S_MIN, EDGES, HALL_BOTTOM_Y, HALL_TOP_Y, NODES,
-                          VIEWBOX, ZONES, s_to_x)
+from airport_core import (CLICKABLE, DRAW_S_MIN, EDGES, NODES, OUTLINE_NEW_TERMINAL, OUTLINE_OLD_HALL, OUTLINE_OTHER,
+                          OUTLINE_TOILET_ANNEX, SECURITY_ZONE_S, VIEWBOX, WEST_NO_ACCESS_S, d_to_y, s_to_x)
 
 ICONS = {
     "entrance": "\U0001F6AA",       # usa
@@ -46,6 +46,11 @@ COLORS = {
     "position": "#dc2626",
     "corridor": "#cbd5e1",
     "wall": "#475569",
+    "landside": "#e0f2fe",
+    "airside": "#dcfce7",
+    "security": "#fecaca",
+    "no_access": "#cbd5e1",
+    "other_building": "#e5e7eb",
     "node": "#ffffff",
     "node_stroke": "#475569",
     "text": "#0f172a",
@@ -74,50 +79,70 @@ def _xy(node_id):
     return n["x"], n["y"]
 
 
+def _pts(outline):
+    return " ".join(f"{s_to_x(s)},{d_to_y(d)}" for s, d in outline)
+
+
+def _rect(s0, s1, d_top, d_bottom):
+    x0, x1, y0, y1 = s_to_x(s0), s_to_x(s1), d_to_y(d_top), d_to_y(d_bottom)
+    return f'x="{x0}" y="{y0}" width="{round(x1 - x0, 1)}" height="{round(y1 - y0, 1)}"'
+
+
+def _gap(p0, p1, color):
+    """O trecere printr-un perete: o linie de culoarea podelei peste conturul peretelui."""
+    (s0, d0), (s1, d1) = p0, p1
+    return (f'<line x1="{s_to_x(s0)}" y1="{d_to_y(d0)}" x2="{s_to_x(s1)}" y2="{d_to_y(d1)}" '
+            f'stroke="{color}" stroke-width="7" stroke-linecap="butt"/>')
+
+
+def _caption(s, d, text, size=18):
+    return (f'<text x="{s_to_x(s)}" y="{d_to_y(d)}" font-size="{size}" font-weight="700" letter-spacing="1.5" '
+            f'text-anchor="middle" fill="{COLORS["muted"]}">{escape(text)}</text>')
+
+
 def _building():
-    w, _h = VIEWBOX
-    hall_x0, hall_x1 = s_to_x(DRAW_S_MIN), s_to_x(DRAW_S_MAX)
-    zone_fill = {z["id"]: z["fill"] for z in ZONES}
+    c = COLORS
+    wall = f'stroke="{c["wall"]}" stroke-linejoin="round"'
     out = [
-        f'<text x="24" y="40" font-size="26" font-weight="700" fill="{COLORS["text"]}">'
-        f'Aeroportul Craiova - Terminal</text>'
+        f'<defs><clipPath id="acm-clip-old"><polygon points="{_pts(OUTLINE_OLD_HALL)}"/></clipPath>'
+        f'<clipPath id="acm-clip-new"><polygon points="{_pts(OUTLINE_NEW_TERMINAL)}"/></clipPath></defs>',
+        # Cladirile, din contururile reale
+        f'<polygon points="{_pts(OUTLINE_OTHER)}" fill="{c["other_building"]}" stroke="#94a3b8" stroke-width="1.5"/>',
+        f'<polygon points="{_pts(OUTLINE_NEW_TERMINAL)}" fill="{c["airside"]}" {wall} stroke-width="3"/>',
+        f'<polygon points="{_pts(OUTLINE_OLD_HALL)}" fill="{c["landside"]}" {wall} stroke-width="3"/>',
+        f'<polygon points="{_pts(OUTLINE_TOILET_ANNEX)}" fill="{c["landside"]}" {wall} stroke-width="2"/>',
+        # Partea din stanga a holului, fara acces pentru pasageri
+        f'<rect {_rect(DRAW_S_MIN - 1, WEST_NO_ACCESS_S, 16, -6)} fill="{c["no_access"]}" opacity="0.7" '
+        f'clip-path="url(#acm-clip-old)"/>',
+        f'<text x="{s_to_x(WEST_NO_ACCESS_S - 2)}" y="{d_to_y(5)}" font-size="15" text-anchor="middle" '
+        f'fill="{c["muted"]}" transform="rotate(-90 {s_to_x(WEST_NO_ACCESS_S - 2)} {d_to_y(5)})">fara acces</text>',
+        # Securitatea: banda rosiatica, in interiorul cladirii alipite
+        f'<rect {_rect(SECURITY_ZONE_S[0], SECURITY_ZONE_S[1], 20, -10)} fill="{c["security"]}" '
+        f'clip-path="url(#acm-clip-new)"/>',
+        # Trecerile prin pereti: usa de la intrare, spre toaleta, spre securitate
+        _gap((-2.2, -5.13), (2.2, -5.05), c["ground"]),
+        _gap((-5.5, 15.9), (-2.5, 15.9), c["landside"]),
+        _gap((-5.5, 14.2), (-2.5, 14.2), c["landside"]),
+        _gap((39.0, 9.4), (41.8, 6.6), c["landside"]),
+        _gap((39.9, 9.4), (42.9, 6.6), c["landside"]),
+        # Numele zonelor si repere exterioare
+        _caption(20, -2.5, "HOL PUBLIC"),
+        _caption(49.3, 21.5, "SECURITATE"),
+        _caption(66, 15, "ZONA PLECARI"),
+        f'<text x="{s_to_x(66)}" y="{d_to_y(23)}" font-size="17" text-anchor="middle" fill="{c["muted"]}">'
+        f'↑ spre avioane</text>',
+        f'<text x="{s_to_x(0)}" y="{round(d_to_y(-5) + 72, 1)}" font-size="17" text-anchor="middle" '
+        f'fill="{c["muted"]}">↓ parcare, autobuz</text>',
+        # Titlul, deasupra cladirilor
+        f'<text x="24" y="40" font-size="26" font-weight="700" fill="{c["text"]}" paint-order="stroke" '
+        f'stroke="{c["ground"]}" stroke-width="8" stroke-linejoin="round">Aeroportul Craiova - Terminal</text>',
     ]
-    # Zonele colorate (holul si anexa cu toaleta)
-    for z in ZONES:
-        stroke = f' stroke="{COLORS["wall"]}" stroke-width="2"' if z["id"] == "toilet_annex" else ""
-        out.append(f'<rect x="{z["x"]}" y="{z["y"]}" width="{z["w"]}" height="{z["h"]}" fill="{z["fill"]}"{stroke}/>')
-    # Peretii holului
-    out.append(f'<rect x="{hall_x0}" y="{HALL_TOP_Y}" width="{round(hall_x1 - hall_x0, 1)}" '
-               f'height="{round(HALL_BOTTOM_Y - HALL_TOP_Y, 1)}" rx="6" fill="none" '
-               f'stroke="{COLORS["wall"]}" stroke-width="3"/>')
-    # Trecerea din hol spre anexa cu toaleta (golul din peretele de sus)
-    tx = NODES["toilet"]["x"]
-    out.append(f'<line x1="{tx - 17}" y1="{HALL_TOP_Y}" x2="{tx + 17}" y2="{HALL_TOP_Y}" '
-               f'stroke="{zone_fill["landside"]}" stroke-width="6"/>')
-    # Usa de la intrare (golul din peretele de jos)
-    ex = NODES["entrance"]["x"]
-    out.append(f'<line x1="{ex - 22}" y1="{HALL_BOTTOM_Y}" x2="{ex + 22}" y2="{HALL_BOTTOM_Y}" '
-               f'stroke="{COLORS["ground"]}" stroke-width="6"/>')
-    # Numele zonelor, deasupra holului; securitatea e ingusta, asa ca numele ei sta sub hol
-    for z in ZONES:
-        if not z["label"]:
-            continue
-        cx = round(z["x"] + z["w"] / 2, 1)
-        y = HALL_BOTTOM_Y + 26 if z["id"] == "security_area" else HALL_TOP_Y - 12
-        out.append(f'<text x="{cx}" y="{y}" font-size="18" font-weight="700" letter-spacing="1.5" '
-                   f'text-anchor="middle" fill="{COLORS["muted"]}">{escape(z["label"].upper())}</text>')
-    # Repere exterioare: drumul (sub intrare) si platforma avioanelor (dincolo de zona de plecari)
-    airside = next(z for z in ZONES if z["id"] == "airside")
-    out.append(f'<text x="{round(airside["x"] + airside["w"] / 2, 1)}" y="{HALL_TOP_Y - 40}" font-size="17" '
-               f'text-anchor="middle" fill="{COLORS["muted"]}">↑ spre avioane</text>')
-    out.append(f'<text x="{ex}" y="{HALL_BOTTOM_Y + 72}" font-size="17" text-anchor="middle" '
-               f'fill="{COLORS["muted"]}">↓ parcare, autobuz</text>')
-    # Pe unde se poate merge: axa holului si drumurile spre locurile de pe pereti.
+    # Pe unde se poate merge: drumul principal (se curbeaza) si drumurile spre locurile din lateral.
     # Securitatea (sens unic) e desenata punctat.
     for a, b, _meters, both_ways in EDGES:
         (x1, y1), (x2, y2) = _xy(a), _xy(b)
         dash = '' if both_ways else ' stroke-dasharray="4 6"'
-        out.append(f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{COLORS["corridor"]}" '
+        out.append(f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{c["corridor"]}" '
                    f'stroke-width="9" stroke-linecap="round"{dash}/>')
     return out
 
@@ -202,7 +227,7 @@ def _legend():
         f'<circle cx="252" cy="{y - 6}" r="8" fill="{COLORS["highlight"]}"/>',
         f'<text x="266" y="{y}" {t}>Destinatie</text>',
         f'<text x="{w - 20}" y="{y}" font-size="16" text-anchor="end" fill="{COLORS["muted"]}">'
-        f'Hol masurat pe teren; KFC simulat (demo)</text>',
+        f'Contur: OpenStreetMap; locuri masurate pe teren; KFC simulat (demo)</text>',
     ]
 
 
@@ -213,7 +238,7 @@ def render_map(position: str, route: list[str], highlight: list[str]) -> str:
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="100%" '
         f'role="img" aria-label="Harta terminalului Aeroportului Craiova" '
-        f'style="max-width:100%;height:auto;font-family:system-ui,Segoe UI,sans-serif;'
+        f'style="max-width:100%;height:auto;overflow:hidden;font-family:system-ui,Segoe UI,sans-serif;'
         f'background:{COLORS["ground"]};border-radius:12px">',
         _STYLE,
         *_building(),

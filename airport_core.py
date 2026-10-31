@@ -14,17 +14,14 @@ import heapq
 import math
 
 # ---------------------------------------------------------------------------
-# GEOMETRIA TERMINALULUI (masurata)
-# Holul e drept, de la vest la est, ~20 m latime. Intrarea e pe peretele dinspre drum;
-# la stanga intrarii holul mai continua ~8 m, la dreapta ajunge la securitate (~50 m)
-# si la poarta (67 m).
-# Fiecare loc are:
-#   s     = metri de la intrare, de-a lungul holului (negativ = la stanga intrarii)
-#   side  = 0 pe axa holului, +1 peretele opus intrarii (spre pista, sus pe harta),
-#           -1 peretele cu intrarea (spre drum, jos pe harta)
-#   spur  = metri de la axa holului pana la loc
-# Calibrarea GPS e media celor doua sesiuni de masurare (au diferit cu ~7 m de-a lungul
-# holului); butonul "Sunt la intrare" din aplicatie corecteaza diferenta din ziua respectiva.
+# GEOMETRIA TERMINALULUI (masurata, in doua dimensiuni)
+# Coordonate in metri, cu originea la intrare:
+#   s = de-a lungul holului (negativ = la stanga intrarii, pozitiv = spre securitate si poarta)
+#   d = de-a curmezisul (pozitiv = spre peretele opus intrarii / pista, negativ = spre drum)
+# Surse: traseul inregistrat cu Samsung S21 (doua sesiuni) pentru drumul de mers si pozitiile de-a
+# lungul holului; conturul cladirilor din OpenStreetMap pentru pereti (GPS-ul lateral e prea imprecis
+# in interior: intrarea a iesit mai "sus" decat check-in-ul).
+# Calibrarea GPS e media celor doua sesiuni; butonul "Sunt la intrare" corecteaza ziua respectiva.
 # ---------------------------------------------------------------------------
 GEO = {
     # doua puncte de pe axa holului: intrarea (s = 0) si capatul dinspre poarta (s = 67)
@@ -32,108 +29,107 @@ GEO = {
     "axis_end": (44.312479, 23.878388),
 }
 TERMINAL_LENGTH_M = 67      # intrare -> poarta 1, de-a lungul holului
-HALL_HALF_WIDTH_M = 10      # holul are ~20 m latime
 WEST_END_S = -8             # capatul din stanga al holului accesibil pasagerilor
 
-# (id, nume, tip, zona, s, side, spur)
-PLACES = [
-    ("entrance",     "Intrare terminal",           "entrance", "landside", 0,  -1, HALL_HALF_WIDTH_M),
-    ("toilet",       "Toaleta (hol public)",       "toilet",   "landside", -4, +1, 12),
-    ("checkin",      "Ghisee check-in",            "checkin",  "landside", 14, +1, 8),
-    ("info",         "Birou informatii",           "info",     "landside", 30, +1, 8),
-    ("security_in",  "Intrare control securitate", "security", "landside", 47, 0,  0),
-    ("security_out", "Iesire control securitate",  "security", "airside",  53, 0,  0),
-    ("cafe",         "Cafenea (zona plecari)",     "food",     "airside",  55, -1, 8),
-    ("kfc",          "KFC (zona plecari)",         "food",     "airside",  55, +1, 8),
-    ("gate_1",       "Poarta 1",                   "gate",     "airside",  67, 0,  0),
+# Drumul principal prin terminal, de la stanga la dreapta: (id, nume, s, d).
+# Se curbeaza: dupa holul drept trece prin peretele diagonal spre securitate, apoi coboara oblic spre poarta.
+MAIN_PATH = [
+    ("wp_west_end",  "Capatul din stanga al holului",           -8, 5),
+    ("wp_toilet",    "Hol, in dreptul toaletei",                -4, 5),
+    ("wp_entrance",  "Hol, in dreptul intrarii",                 0, 5),
+    ("wp_checkin",   "Hol, in dreptul check-in-ului",           14, 5),
+    ("wp_info",      "Hol, in dreptul biroului de informatii",  30, 5),
+    ("wp_junction",  "Trecerea spre securitate",                40, 8),
+    ("security_in",  "Intrare control securitate",              47, 9),
+    ("security_out", "Iesire control securitate",               52, 8),
+    ("wp_cafe",      "Zona plecari, in dreptul cafenelei",      55, 6),
+    ("gate_1",       "Poarta 1",                                67, -5),
+]
+_MAIN_KINDS = {"security_in": "security", "security_out": "security", "gate_1": "gate"}
+
+# Locurile din lateral, legate de un punct al drumului principal: (id, nume, tip, (s, d), legat_de)
+SIDE_PLACES = [
+    ("entrance", "Intrare terminal",       "entrance", (0, -5),  "wp_entrance"),  # peretele dinspre drum
+    ("toilet",   "Toaleta (hol public)",   "toilet",   (-4, 19), "wp_toilet"),    # anexa din spatele peretelui opus
+    ("checkin",  "Ghisee check-in",        "checkin",  (14, 13), "wp_checkin"),   # peretele opus
+    ("info",     "Birou informatii",       "info",     (30, 13), "wp_info"),      # peretele opus
+    ("cafe",     "Cafenea (zona plecari)", "food",     (55, 0),  "wp_cafe"),      # partea dinspre intrare
+    ("kfc",      "KFC (zona plecari)",     "food",     (55, 13), "wp_cafe"),      # fata in fata cu cafeneaua
 ]
 SIMULATED_PLACES = {"kfc"}  # SIMULAT: nu exista in terminal, e pus doar pentru demo
 
+# Contururile cladirilor din OpenStreetMap, in coordonate (s, d), pentru desen.
+OUTLINE_OLD_HALL = [  # terminalul vechi (holul public)
+    (48.8, -0.7), (45.6, -4.3), (-17.9, -5.4), (-22.6, -4.8), (-26.4, -2.2), (-28.2, 1.3), (-28.4, 15.1),
+    (-15.4, 15.5), (-3.5, 16.0), (-3.5, 14.2), (34.0, 14.6)]
+OUTLINE_TOILET_ANNEX = [  # anexa din spatele peretelui opus, cu toaleta
+    (-15.5, 21.0), (-15.4, 15.5), (-3.5, 16.0), (-3.5, 14.2), (5.8, 14.6), (9.2, 14.7), (16.4, 14.8), (16.0, 23.4),
+    (7.2, 23.2), (-2.9, 22.9), (-2.8, 21.3)]
+OUTLINE_NEW_TERMINAL = [  # cladirea alipita, cu securitatea, zona de plecari si poarta
+    (47.2, 43.0), (47.1, 36.3), (42.1, 36.4), (42.0, 25.0), (47.5, 24.9), (47.6, 18.2), (35.4, 18.2), (35.6, 13.4),
+    (53.3, -3.1), (51.5, -5.4), (55.7, -9.0), (111.6, -4.8), (117.9, -1.8), (121.5, 2.7), (123.5, 7.3), (123.0, 11.4),
+    (120.1, 14.7), (117.5, 16.5), (122.3, 27.8), (137.8, 20.3), (133.8, 31.3), (129.2, 37.9), (126.3, 40.5),
+    (123.8, 42.8), (117.5, 47.9), (109.5, 52.2), (101.6, 54.3), (94.2, 55.1), (89.5, 55.2), (74.6, 55.3),
+    (61.3, 55.5), (61.2, 48.7), (56.3, 48.7), (54.5, 48.7), (54.4, 42.9), (49.7, 43.0)]
+OUTLINE_OTHER = [  # cladire alipita, fara acces pentru pasageri
+    (31.4, 32.5), (12.4, 32.9), (12.4, 26.9), (8.7, 26.9), (9.2, 14.7), (34.0, 15.0), (33.8, 25.3), (31.6, 25.5)]
+WEST_NO_ACCESS_S = -10       # de aici spre stanga holul nu e accesibil pasagerilor
+SECURITY_ZONE_S = (44.5, 54) # banda "Securitate" pe harta
+
 # ---------------------------------------------------------------------------
-# Desenul: harta 1000 x 520, holul la scara (aceeasi scara pe ambele axe).
-# Distantele din graf vin din s si spur, NU din x/y.
+# Desenul: harta 1000 x 520, la scara (aceeasi scara pe ambele axe).
+# Distantele din graf vin din (s, d) in metri, NU din pixeli.
 # ---------------------------------------------------------------------------
 VIEWBOX = (1000, 520)
 MAP_MARGIN_X = 40
-DRAW_S_MIN, DRAW_S_MAX = -10, 71    # peretii de capat ai holului
+DRAW_S_MIN, DRAW_S_MAX = -14, 74
 PX_PER_M = (VIEWBOX[0] - 2 * MAP_MARGIN_X) / (DRAW_S_MAX - DRAW_S_MIN)
-MAP_X0 = MAP_MARGIN_X - DRAW_S_MIN * PX_PER_M   # x-ul intrarii (s = 0)
-CORRIDOR_Y = 280                                 # y-ul axei holului
-HALL_TOP_Y = round(CORRIDOR_Y - HALL_HALF_WIDTH_M * PX_PER_M, 1)      # peretele opus intrarii
-HALL_BOTTOM_Y = round(CORRIDOR_Y + HALL_HALF_WIDTH_M * PX_PER_M, 1)   # peretele cu intrarea
-SECURITY_ZONE_S = (46, 54)
-TOILET_ANNEX_S = (-9, 1)   # anexa cu toaleta, in spatele peretelui opus
-TOILET_ANNEX_DEPTH_M = 14.5
+MAP_X0 = MAP_MARGIN_X - DRAW_S_MIN * PX_PER_M   # x pentru s = 0
+MAP_Y0 = 330                                     # y pentru d = 0
 
 
 def s_to_x(s):
     return round(MAP_X0 + s * PX_PER_M, 1)
 
 
-def offset_to_y(meters_toward_opposite_wall):
-    return round(CORRIDOR_Y - meters_toward_opposite_wall * PX_PER_M, 1)
-
-
-def _zone(zid, label, s0, s1, top_m, bottom_m, fill):
-    """Dreptunghi intre s0..s1, de la top_m la bottom_m metri fata de axa (pozitiv = spre peretele opus)."""
-    x0, x1 = s_to_x(s0), s_to_x(s1)
-    y0, y1 = offset_to_y(top_m), offset_to_y(bottom_m)
-    return {"id": zid, "label": label, "x": x0, "y": y0, "w": round(x1 - x0, 1), "h": round(y1 - y0, 1), "fill": fill}
-
-
-ZONES = [
-    _zone("landside", "Hol public", DRAW_S_MIN, SECURITY_ZONE_S[0], HALL_HALF_WIDTH_M, -HALL_HALF_WIDTH_M, "#e0f2fe"),
-    _zone("security_area", "Securitate", SECURITY_ZONE_S[0], SECURITY_ZONE_S[1], HALL_HALF_WIDTH_M, -HALL_HALF_WIDTH_M, "#fecaca"),
-    _zone("airside", "Zona plecari", SECURITY_ZONE_S[1], DRAW_S_MAX, HALL_HALF_WIDTH_M, -HALL_HALF_WIDTH_M, "#dcfce7"),
-    _zone("toilet_annex", "", TOILET_ANNEX_S[0], TOILET_ANNEX_S[1], TOILET_ANNEX_DEPTH_M, HALL_HALF_WIDTH_M, "#e0f2fe"),
-]
-ZONE_BY_ID = {z["id"]: z for z in ZONES}
-
-
-def _area(node_id, kind, zone):
-    if node_id == "toilet":
-        return "toilet_annex"
-    if kind == "security":
-        return "security_area"
-    return zone
+def d_to_y(d):
+    return round(MAP_Y0 - d * PX_PER_M, 1)
 
 
 # ---------------------------------------------------------------------------
-# T1 - NODES si EDGES, construite din PLACES
-#   kind  = tipul locului; "waypoint" = punct pe axa holului, nu e loc pentru pasager
+# T1 - NODES si EDGES
+#   kind  = tipul locului; "waypoint" = punct pe drumul principal, nu e loc pentru pasager
 #   zone  = "landside" (inainte de securitate) / "airside" (dupa securitate)
-#   area  = id-ul din ZONES in care e desenat nodul
-# Pentru locurile de pe pereti exista un waypoint "wp_<id>" pe axa, in dreptul lor
-# (locurile aflate la acelasi s, fata in fata, impart acelasi waypoint).
+#   side  = 0 pe drumul principal, +1 deasupra lui pe harta, -1 dedesubt
 # ---------------------------------------------------------------------------
-NODES = {
-    "wp_west_end": {"name": "Capatul din stanga al holului", "kind": "waypoint", "zone": "landside",
-                    "s": WEST_END_S, "side": 0, "x": s_to_x(WEST_END_S), "y": CORRIDOR_Y, "area": "landside"},
-}
-_WAYPOINT_AT_S = {}
-_SPURS = []   # (waypoint, loc, metri)
-for _id, _name, _kind, _zone_id, _s, _side, _spur in PLACES:
-    NODES[_id] = {"name": _name, "kind": _kind, "zone": _zone_id, "s": _s, "side": _side,
-                  "x": s_to_x(_s), "y": offset_to_y(_side * _spur), "area": _area(_id, _kind, _zone_id),
-                  "simulated": _id in SIMULATED_PLACES}
-    if _side != 0:
-        if _s not in _WAYPOINT_AT_S:
-            _WAYPOINT_AT_S[_s] = "wp_" + _id
-            NODES["wp_" + _id] = {"name": f"Hol, in dreptul: {_name}", "kind": "waypoint", "zone": _zone_id,
-                                  "s": _s, "side": 0, "x": s_to_x(_s), "y": CORRIDOR_Y, "area": _zone_id}
-        _SPURS.append((_WAYPOINT_AT_S[_s], _id, _spur))
+def _zone_for(s):
+    return "landside" if s <= 47 else "airside"   # securitatea incepe la security_in (s = 47)
 
-# Nodurile de pe axa holului, de la stanga la dreapta.
-CORRIDOR = sorted((n for n, v in NODES.items() if v["side"] == 0), key=lambda n: NODES[n]["s"])
+
+NODES = {}
+for _id, _name, _s, _d in MAIN_PATH:
+    NODES[_id] = {"name": _name, "kind": _MAIN_KINDS.get(_id, "waypoint"), "zone": _zone_for(_s), "s": _s, "d": _d,
+                  "side": 0, "x": s_to_x(_s), "y": d_to_y(_d), "simulated": False}
+for _id, _name, _kind, (_s, _d), _via in SIDE_PLACES:
+    NODES[_id] = {"name": _name, "kind": _kind, "zone": NODES[_via]["zone"], "s": _s, "d": _d,
+                  "side": 1 if _d > NODES[_via]["d"] else -1, "x": s_to_x(_s), "y": d_to_y(_d),
+                  "simulated": _id in SIMULATED_PLACES}
+
+# Drumul principal, de la stanga la dreapta.
+CORRIDOR = [p[0] for p in MAIN_PATH]
+
+
+def _dist(a, b):
+    return round(math.hypot(NODES[a]["s"] - NODES[b]["s"], NODES[a]["d"] - NODES[b]["d"]), 1)
+
 
 # (de la, la, metri, ambele_sensuri)
 EDGES = []
 for _a, _b in zip(CORRIDOR, CORRIDOR[1:]):
     # Securitatea: un singur sens. Dupa ea nu exista drum inapoi in zona publica.
-    _both = not (_a == "security_in" and _b == "security_out")
-    EDGES.append((_a, _b, NODES[_b]["s"] - NODES[_a]["s"], _both))
-for _wp, _place, _m in _SPURS:
-    EDGES.append((_wp, _place, _m, True))
+    EDGES.append((_a, _b, _dist(_a, _b), not (_a == "security_in" and _b == "security_out")))
+for _id, _name, _kind, _pos, _via in SIDE_PLACES:
+    EDGES.append((_via, _id, _dist(_via, _id), True))
 
 WALK_M_PER_MIN = 60  # pas de pasager cu bagaj de mana
 
@@ -158,7 +154,7 @@ ADJ = _adjacency()
 
 
 # ---------------------------------------------------------------------------
-# Localizare live: GPS (lat, lon) -> s (metri de la intrare) -> nod pe axa holului
+# Localizare live: GPS (lat, lon) -> s (metri de la intrare) -> nod pe drumul principal
 # ---------------------------------------------------------------------------
 def _geo_axis():
     lat0, lon0 = GEO["origin"]
@@ -178,6 +174,31 @@ def geo_to_s(lat, lon):
     ex = (lon - a["lon0"]) * 111320 * a["k"]
     ny = (lat - a["lat0"]) * 111320
     return ex * a["ux"] + ny * a["uy"]
+
+
+def path_d(s):
+    """Pozitia laterala a drumului principal la distanta s (interpolare intre puncte)."""
+    pts = [(NODES[n]["s"], NODES[n]["d"]) for n in CORRIDOR]
+    if s <= pts[0][0]:
+        return pts[0][1]
+    for (s0, d0), (s1, d1) in zip(pts, pts[1:]):
+        if s <= s1:
+            return d0 + (d1 - d0) * (s - s0) / (s1 - s0)
+    return pts[-1][1]
+
+
+def point_in_outline(s, d, outline, tolerance=0.5):
+    """True daca (s, d) e in contur sau la cel mult `tolerance` metri de un perete."""
+    inside = False
+    for (s0, d0), (s1, d1) in zip(outline, outline[1:] + outline[:1]):
+        if (d0 > d) != (d1 > d) and s < s0 + (d - d0) * (s1 - s0) / (d1 - d0):
+            inside = not inside
+        # distanta pana la perete
+        ls = (s1 - s0) ** 2 + (d1 - d0) ** 2
+        t = max(0, min(1, ((s - s0) * (s1 - s0) + (d - d0) * (d1 - d0)) / ls)) if ls else 0
+        if math.hypot(s - (s0 + t * (s1 - s0)), d - (d0 + t * (d1 - d0))) <= tolerance:
+            return True
+    return inside
 
 
 # ---------------------------------------------------------------------------
@@ -260,12 +281,24 @@ def locate(s, state):
     return {"node": node, "suggest_security": (not passed) and s >= SECURITY_PASSED_S}
 
 
-def apply_live_position(session, s):
-    """Muta pasagerul pe nodul dat de GPS. Modifica `session` pe loc."""
+# "at" (locul in care browserul a decis ca a ajuns pasagerul) e acceptat doar daca e in zona lui
+# si la cel mult atatia metri de pozitia GPS, de-a lungul holului.
+AT_MAX_M = 12
+
+
+def apply_live_position(session, s, at=None):
+    """Muta pasagerul pe nodul dat de GPS. Modifica `session` pe loc.
+
+    `at` = un loc in care pasagerul a ajuns (tinta traseului sau toaleta, detectata de browser).
+    """
     loc = locate(s, session["state"])
-    changed = loc["node"] != session["position"]
-    session["position"] = loc["node"]
-    return {**loc, "changed": changed}
+    node = loc["node"]
+    if (at in NODES and NODES[at]["kind"] != "waypoint" and NODES[at]["zone"] == NODES[node]["zone"]
+            and abs(NODES[at]["s"] - s) <= AT_MAX_M):
+        node = at
+    changed = node != session["position"]
+    session["position"] = node
+    return {"node": node, "suggest_security": loc["suggest_security"], "changed": changed}
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +357,7 @@ def _place_info(node_id, dist, now):
     if node_id in OPENING_HOURS:
         info["hours"] = "-".join(OPENING_HOURS[node_id])
     if node_id in dist:
-        info["distance_m"] = dist[node_id]
+        info["distance_m"] = round(dist[node_id])
         info["walk_min"] = _walk_min(dist[node_id])
     return info
 
@@ -369,7 +402,7 @@ def get_route(session, to):
         "target": target,
         "target_name": NODES[target]["name"],
         "path": _path_to(prev, start, target),
-        "distance_m": dist[target],
+        "distance_m": round(dist[target]),
         "walk_min": _walk_min(dist[target]),
         "open_now": _is_open(target, session["now"]),
     }
@@ -595,22 +628,27 @@ def _self_test():
     for a, b, meters, _ in EDGES:
         assert a in NODES and b in NODES, f"muchie cu nod inexistent: {a}->{b}"
         assert meters > 0, f"muchie de lungime 0: {a}->{b}"
-    # Desenul: fiecare nod e in interiorul zonei lui (toleranta de rotunjire)
+    # Fiecare nod e in interiorul cladirilor reale (contururile din OpenStreetMap)
+    outlines = (OUTLINE_OLD_HALL, OUTLINE_TOILET_ANNEX, OUTLINE_NEW_TERMINAL)
     for node_id, n in NODES.items():
-        z = ZONE_BY_ID[n["area"]]
-        assert (z["x"] - 0.5 <= n["x"] <= z["x"] + z["w"] + 0.5 and
-                z["y"] - 0.5 <= n["y"] <= z["y"] + z["h"] + 0.5), f"{node_id} in afara zonei {z['id']}"
+        assert any(point_in_outline(n["s"], n["d"], o) for o in outlines), f"{node_id} in afara cladirii"
+    assert point_in_outline(0, -5, OUTLINE_OLD_HALL, tolerance=0.2)       # intrarea e chiar pe peretele dinspre drum
+    assert point_in_outline(-4, 19, OUTLINE_TOILET_ANNEX, tolerance=0)    # toaleta e in anexa
+    assert not point_in_outline(0, -12, OUTLINE_OLD_HALL)                 # afara, spre drum
+    # Drumul principal merge de la stanga la dreapta si se curbeaza spre poarta
+    assert [NODES[n]["s"] for n in CORRIDOR] == sorted(NODES[n]["s"] for n in CORRIDOR)
+    assert path_d(20) == 5 and path_d(61) == 0.5 and path_d(100) == -5
     for code, f in FLIGHTS.items():
         assert NODES[f["gate"]]["kind"] == "gate", code
     assert set(CLICKABLE) == {"entrance", "toilet", "checkin", "info", "cafe", "kfc", "gate_1"}
 
-    # Traseu intrare -> poarta 1: prin securitate, 10 m de la usa la axa holului + 67 m de hol
+    # Traseu intrare -> poarta 1: prin securitate, pe drumul real (mai lung decat linia dreapta de 67 m)
     s = new_session()
     r = get_route(s, "gate_1")
     assert r["reachable"] and r["path"][0] == "entrance" and r["path"][-1] == "gate_1"
     i = r["path"].index("security_in")
     assert r["path"][i + 1] == "security_out"
-    assert r["distance_m"] == HALL_HALF_WIDTH_M + TERMINAL_LENGTH_M
+    assert 77 < r["distance_m"] < 90, r["distance_m"]
     # Holul merge si la stanga intrarii: toaleta e la stanga, pe peretele opus
     r = get_route(s, "toilet")
     assert r["target"] == "toilet" and "wp_entrance" in r["path"] and NODES["toilet"]["s"] < 0
@@ -687,6 +725,14 @@ def _self_test():
     assert r["changed"] and s["position"] == "wp_checkin"
     assert not apply_live_position(s, 15)["changed"]
     assert get_route(s, "gate_1")["reachable"]  # rutele pornesc si dintr-un punct de pe axa
+    # "at": browserul a decis ca pasagerul a ajuns intr-un loc (tinta traseului / toaleta)
+    s = new_session()
+    assert apply_live_position(s, 13.5, at="checkin")["node"] == "checkin"
+    assert apply_live_position(s, -6, at="toilet")["node"] == "toilet"
+    assert apply_live_position(s, 40, at="toilet")["node"] == "wp_junction"   # prea departe: ignorat
+    assert apply_live_position(s, 50, at="cafe")["node"] == "security_in"     # alta zona: ignorat
+    assert apply_live_position(s, 1, at="wp_info")["node"] == "wp_entrance"   # waypoint: ignorat
+    assert apply_live_position(s, 1, at="nu_exista")["node"] == "wp_entrance"
 
     print("OK")
 
