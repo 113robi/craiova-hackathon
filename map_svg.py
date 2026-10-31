@@ -35,8 +35,22 @@ COLORS = {
     "muted": "#64748b",
 }
 
-# Clasele au prefixul "acm-": st.html nu foloseste iframe, deci CSS-ul e global in pagina.
-# Daca <style> e eliminat de sanitizer, harta ramane corecta, doar fara animatie.
+# Nume scurte pe harta, ca textul sa ramana lizibil pe un ecran de telefon.
+SHORT_NAMES = {
+    "entrance": "Intrare",
+    "checkin": "Check-in",
+    "cafe_public": "Cafenea",
+    "toilet_a": "Toaleta",
+    "toilet_b": "Toaleta",
+    "kfc": "KFC",
+    "shop_duty_free": "Duty Free",
+    "gate_1": "Poarta 1",
+    "gate_2": "Poarta 2",
+}
+ZONE_LABELS_HIDDEN = {"checkin_area"}  # ghiseul are deja eticheta "Check-in"
+
+# Clasele au prefixul "acm-" ca sa nu se ciocneasca cu CSS-ul paginii.
+# Daca <style> e eliminat, harta ramane corecta, doar fara animatie.
 _STYLE = """
 <style>
   .acm-route { stroke-dasharray: 14 10; animation: acm-flow 1s linear infinite; }
@@ -54,16 +68,18 @@ def _xy(node_id):
 
 def _background():
     out = [
-        f'<text x="24" y="38" font-size="20" font-weight="700" fill="{COLORS["text"]}">'
-        f'Aeroportul International Craiova - Terminal</text>'
+        f'<text x="24" y="44" font-size="28" font-weight="700" fill="{COLORS["text"]}">'
+        f'Aeroportul Craiova - Terminal</text>'
     ]
     for z in ZONES:
         out.append(
             f'<rect x="{z["x"]}" y="{z["y"]}" width="{z["w"]}" height="{z["h"]}" rx="14" '
             f'fill="{z["fill"]}" stroke="#94a3b8" stroke-width="1.5"/>'
         )
+        if z["id"] in ZONE_LABELS_HIDDEN:
+            continue
         out.append(
-            f'<text x="{z["x"] + 12}" y="{z["y"] + 24}" font-size="18" font-weight="600" '
+            f'<text x="{z["x"] + 12}" y="{z["y"] + 30}" font-size="24" font-weight="600" '
             f'fill="{COLORS["muted"]}">{escape(z["label"])}</text>'
         )
     # Coridoarele: pe unde se poate merge. Securitatea (sens unic) e desenata punctat.
@@ -98,20 +114,22 @@ def _places(highlight):
         x, y = n["x"], n["y"]
         is_hl = node_id in highlight
         if is_hl:
-            out.append(f'<circle cx="{x}" cy="{y}" r="22" fill="{COLORS["highlight"]}" opacity="0.9"/>')
+            out.append(f'<circle cx="{x}" cy="{y}" r="27" fill="{COLORS["highlight"]}" opacity="0.9"/>')
         out.append(
-            f'<circle cx="{x}" cy="{y}" r="15" fill="{COLORS["node"]}" '
+            f'<circle cx="{x}" cy="{y}" r="19" fill="{COLORS["node"]}" '
             f'stroke="{COLORS["highlight"] if is_hl else COLORS["node_stroke"]}" stroke-width="2"/>'
         )
         icon = ICONS.get(n["kind"], "")
         if icon:
-            out.append(f'<text x="{x}" y="{y + 6}" font-size="16" text-anchor="middle">{icon}</text>')
+            out.append(f'<text x="{x}" y="{y + 7}" font-size="20" text-anchor="middle">{icon}</text>')
         if n["kind"] == "security":
             continue  # cele doua noduri sunt prea apropiate; zona "Securitate" are deja eticheta
+        label_y = y - 32 if n.get("side", 0) > 0 else y + 48  # latura de nord: eticheta deasupra
+        # Nume scurte pe harta (textul trebuie sa se citeasca pe telefon); numele complet ramane in chat.
         out.append(
-            f'<text x="{x}" y="{y + 40}" font-size="15" text-anchor="middle" '
-            f'font-weight="{700 if is_hl else 400}" fill="{COLORS["text"]}" '
-            f'paint-order="stroke" stroke="#ffffff" stroke-width="4">{escape(n["name"])}</text>'
+            f'<text x="{x}" y="{label_y}" font-size="22" text-anchor="middle" '
+            f'font-weight="{700 if is_hl else 500}" fill="{COLORS["text"]}" '
+            f'paint-order="stroke" stroke="#ffffff" stroke-width="5">{escape(SHORT_NAMES.get(node_id, n["name"]))}</text>'
         )
     return out
 
@@ -121,28 +139,31 @@ def _position(position):
         return []
     x, y = _xy(position)
     c = COLORS["position"]
+    # Grupul are clasa "acm-static-pos": cand exista localizare live, JS-ul il ascunde
+    # si deseneaza punctul live in <g class="acm-live">.
     return [
-        f'<circle class="acm-pulse" cx="{x}" cy="{y}" r="11" fill="{c}" opacity="0.5"/>',
-        f'<circle cx="{x}" cy="{y}" r="11" fill="{c}" stroke="#ffffff" stroke-width="3"/>',
-        f'<text x="{x}" y="{y - 22}" font-size="14" font-weight="700" text-anchor="middle" '
-        f'fill="{c}" paint-order="stroke" stroke="#ffffff" stroke-width="4">Esti aici</text>',
+        '<g class="acm-static-pos">',
+        f'<circle class="acm-pulse" cx="{x}" cy="{y}" r="14" fill="{c}" opacity="0.5"/>',
+        f'<circle cx="{x}" cy="{y}" r="14" fill="{c}" stroke="#ffffff" stroke-width="3"/>',
+        f'<text x="{x}" y="{y - 26}" font-size="22" font-weight="700" text-anchor="middle" '
+        f'fill="{c}" paint-order="stroke" stroke="#ffffff" stroke-width="5">Esti aici</text>',
+        '</g>',
     ]
 
 
 def _legend():
     w, h = VIEWBOX
-    y = h - 12
+    y = h - 10
+    t = f'font-size="19" fill="{COLORS["text"]}"'
     return [
-        f'<line x1="24" y1="{y - 5}" x2="54" y2="{y - 5}" stroke="{COLORS["route"]}" stroke-width="6" stroke-linecap="round"/>',
-        f'<text x="62" y="{y}" font-size="13" fill="{COLORS["text"]}">Traseu</text>',
-        f'<circle cx="130" cy="{y - 5}" r="7" fill="{COLORS["position"]}"/>',
-        f'<text x="142" y="{y}" font-size="13" fill="{COLORS["text"]}">Esti aici</text>',
-        f'<circle cx="220" cy="{y - 5}" r="7" fill="{COLORS["highlight"]}"/>',
-        f'<text x="232" y="{y}" font-size="13" fill="{COLORS["text"]}">Destinatie</text>',
-        f'<line x1="320" y1="{y - 5}" x2="350" y2="{y - 5}" stroke="{COLORS["corridor"]}" stroke-width="6" stroke-dasharray="4 6"/>',
-        f'<text x="358" y="{y}" font-size="13" fill="{COLORS["text"]}">Sens unic (securitate)</text>',
-        f'<text x="{w - 20}" y="{y}" font-size="12" text-anchor="end" fill="{COLORS["muted"]}">'
-        f'Plan simplificat, date simulate</text>',
+        f'<line x1="24" y1="{y - 6}" x2="56" y2="{y - 6}" stroke="{COLORS["route"]}" stroke-width="7" stroke-linecap="round"/>',
+        f'<text x="64" y="{y}" {t}>Traseu</text>',
+        f'<circle cx="150" cy="{y - 6}" r="8" fill="{COLORS["position"]}"/>',
+        f'<text x="164" y="{y}" {t}>Esti aici</text>',
+        f'<circle cx="262" cy="{y - 6}" r="8" fill="{COLORS["highlight"]}"/>',
+        f'<text x="276" y="{y}" {t}>Destinatie</text>',
+        f'<text x="{w - 20}" y="{y}" font-size="17" text-anchor="end" fill="{COLORS["muted"]}">'
+        f'Coridor masurat; magazine si toalete simulate</text>',
     ]
 
 
@@ -159,6 +180,7 @@ def render_map(position: str, route: list[str], highlight: list[str]) -> str:
         *_route(route),
         *_places(highlight),
         *_position(position),
+        '<g class="acm-live"></g>',
         *_legend(),
         "</svg>",
     ]
@@ -169,10 +191,16 @@ if __name__ == "__main__":
     import os
     import tempfile
 
+    from airport_core import get_route, new_session
+
+    def _example(title, position, target):
+        s = new_session()
+        s["position"] = position
+        return title, position, get_route(s, target).get("path", []), [target]
+
     examples = [
-        ("Intrare -> Poarta 1", "entrance",
-         ["entrance", "wp_hall", "security_in", "security_out", "wp_airside", "gate_1"], ["gate_1"]),
-        ("Dupa securitate -> KFC", "security_out", ["security_out", "wp_airside", "kfc"], ["kfc"]),
+        _example("Intrare -> Poarta 1", "entrance", "gate_1"),
+        _example("Dupa securitate -> KFC", "security_out", "kfc"),
         ("Id-uri necunoscute (nu trebuie sa crape)", "nu_exista", ["nu_exista", "kfc"], ["nu_exista"]),
     ]
     html = "".join(f"<h3>{escape(t)}</h3>{render_map(p, r, hl)}" for t, p, r, hl in examples)

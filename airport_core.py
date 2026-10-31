@@ -11,64 +11,109 @@ import heapq
 import math
 
 # ---------------------------------------------------------------------------
-# T2 - ZONES: fundalul hartii (dreptunghiuri). Sistem de coordonate 1000 x 600,
-# acelasi cu viewBox-ul din map_svg.py. Zona publica in stanga, plecari in dreapta.
-# SIMULAT: forma reala a terminalului vine de la C (T21).
+# GEOMETRIA TERMINALULUI
+# Terminalul (vechi, Craiova) e un coridor drept, de la vest (intrare) la est (porti).
+# Fiecare loc are:
+#   s    = metri de la intrare, de-a lungul coridorului
+#   side = 0 pe coridor, +1 latura de nord (sus pe harta), -1 latura de sud (jos)
+# MASURAT (31.10.2026, Samsung S21): entrance, security_in, security_out, gate_1.
+# MASURAT de echipa (~10 m de la intrare): checkin.
+# SIMULAT: cafenea, toalete, KFC, Duty Free, poarta 2 -> schimbati `s`/`side` dupa realitate.
+# ---------------------------------------------------------------------------
+GEO = {
+    # Doua puncte GPS care definesc axa coridorului (S21: "Intrare" precizie 3 m, "Poarta" 14 m).
+    "origin": (44.312464, 23.877588),
+    "axis_end": (44.312480, 23.878433),
+}
+TERMINAL_LENGTH_M = 67
+SPUR_M = 5  # metri de la coridor pana la un loc lateral (ghiseu, toaleta, magazin)
+
+# (id, nume, tip, zona, s, side)
+PLACES = [
+    ("entrance",       "Intrare terminal",            "entrance", "landside", 0,  0),
+    ("checkin",        "Ghisee check-in",             "checkin",  "landside", 10, +1),
+    ("cafe_public",    "Cafenea (zona publica)",      "food",     "landside", 15, -1),
+    ("toilet_a",       "Toaleta hol public",          "toilet",   "landside", 19, +1),
+    ("security_in",    "Intrare control securitate",  "security", "landside", 25, 0),
+    ("security_out",   "Iesire control securitate",   "security", "airside",  39, 0),
+    ("kfc",            "KFC",                         "food",     "airside",  46, +1),
+    ("shop_duty_free", "Duty Free",                   "shop",     "airside",  51, -1),
+    ("toilet_b",       "Toaleta zona plecari",        "toilet",   "airside",  56, +1),
+    ("gate_2",         "Poarta 2",                    "gate",     "airside",  61, -1),
+    ("gate_1",         "Poarta 1",                    "gate",     "airside",  67, 0),
+]
+
+# ---------------------------------------------------------------------------
+# Desenul: harta 1000 x 600, coridorul orizontal. x se calculeaza din s, deci
+# harta e la scara. Distantele din graf vin din s, NU din x/y.
 # ---------------------------------------------------------------------------
 VIEWBOX = (1000, 600)
+MAP_X0 = 70          # x-ul intrarii
+PX_PER_M = 12.8      # 67 m -> ~858 px
+CORRIDOR_Y = 330
+SPUR_PX = 110        # cat de departe de coridor se deseneaza locurile laterale
+
+SECURITY_ZONE_S = (23.5, 42)   # banda "Securitate" pe harta
+GATE_ZONE_S = (58, 71)
+
+
+def s_to_x(s):
+    return round(MAP_X0 + s * PX_PER_M, 1)
+
+
+def _zone(zid, label, s0, s1, y, h, fill):
+    x0, x1 = s_to_x(s0), s_to_x(s1)
+    return {"id": zid, "label": label, "x": x0, "y": y, "w": round(x1 - x0, 1), "h": h, "fill": fill}
+
 
 ZONES = [
-    {"id": "landside", "label": "Hol public", "x": 20, "y": 60, "w": 420, "h": 500, "fill": "#e0f2fe"},
-    {"id": "checkin_area", "label": "Check-in", "x": 200, "y": 80, "w": 220, "h": 130, "fill": "#bae6fd"},
-    {"id": "security_area", "label": "Securitate", "x": 450, "y": 60, "w": 100, "h": 500, "fill": "#fecaca"},
-    {"id": "airside", "label": "Zona plecari", "x": 560, "y": 60, "w": 420, "h": 500, "fill": "#dcfce7"},
-    {"id": "gate_area", "label": "Porti", "x": 840, "y": 80, "w": 130, "h": 460, "fill": "#fde68a"},
+    _zone("landside", "Hol public", -4, SECURITY_ZONE_S[0] - 0.5, 70, 490, "#e0f2fe"),
+    _zone("checkin_area", "Check-in", 5, 15, 120, 150, "#bae6fd"),
+    _zone("security_area", "Securitate", SECURITY_ZONE_S[0], SECURITY_ZONE_S[1], 70, 490, "#fecaca"),
+    _zone("airside", "Zona plecari", SECURITY_ZONE_S[1] + 0.5, 71, 70, 490, "#dcfce7"),
+    _zone("gate_area", "Porti", GATE_ZONE_S[0], GATE_ZONE_S[1] - 0.5, 90, 450, "#fde68a"),
 ]
 ZONE_BY_ID = {z["id"]: z for z in ZONES}
 
+
+def _area(kind, zone, s):
+    if kind == "checkin":
+        return "checkin_area"
+    if SECURITY_ZONE_S[0] <= s <= SECURITY_ZONE_S[1]:
+        return "security_area"
+    if zone == "airside" and s >= GATE_ZONE_S[0]:
+        return "gate_area"
+    return zone
+
+
 # ---------------------------------------------------------------------------
-# T1 - NODES si EDGES
-#   x, y  = doar pentru desen (NU se folosesc la distante)
-#   kind  = tipul locului; "waypoint" = colt de coridor, nu e loc pentru pasager
+# T1 - NODES si EDGES, construite din PLACES
+#   kind  = tipul locului; "waypoint" = punct pe coridor, nu e loc pentru pasager
 #   zone  = "landside" (inainte de securitate) / "airside" (dupa securitate)
 #   area  = id-ul din ZONES in care e desenat nodul
-# SIMULAT: pozitiile si numele locurilor.
+# Pentru fiecare loc lateral exista un waypoint "wp_<id>" pe coridor, in dreptul lui.
 # ---------------------------------------------------------------------------
-NODES = {
-    # landside
-    "entrance":       {"name": "Intrare terminal",       "x": 50,  "y": 480, "kind": "entrance", "zone": "landside", "area": "landside"},
-    "wp_hall":        {"name": "Hol central",            "x": 260, "y": 400, "kind": "waypoint", "zone": "landside", "area": "landside"},
-    "cafe_public":    {"name": "Cafenea (zona publica)", "x": 110, "y": 300, "kind": "food",     "zone": "landside", "area": "landside"},
-    "toilet_a":       {"name": "Toaleta hol public",     "x": 370, "y": 500, "kind": "toilet",   "zone": "landside", "area": "landside"},
-    "checkin":        {"name": "Ghisee check-in",        "x": 310, "y": 150, "kind": "checkin",  "zone": "landside", "area": "checkin_area"},
-    "security_in":    {"name": "Intrare control securitate", "x": 470, "y": 300, "kind": "security", "zone": "landside", "area": "security_area"},
-    # airside
-    "security_out":   {"name": "Iesire control securitate", "x": 530, "y": 300, "kind": "security", "zone": "airside", "area": "security_area"},
-    "wp_airside":     {"name": "Coridor zona plecari",   "x": 690, "y": 300, "kind": "waypoint", "zone": "airside",  "area": "airside"},
-    "kfc":            {"name": "KFC",                    "x": 650, "y": 140, "kind": "food",     "zone": "airside",  "area": "airside"},
-    "shop_duty_free": {"name": "Duty Free",              "x": 650, "y": 460, "kind": "shop",     "zone": "airside",  "area": "airside"},
-    "toilet_b":       {"name": "Toaleta zona plecari",   "x": 770, "y": 495, "kind": "toilet",   "zone": "airside",  "area": "airside"},
-    "gate_1":         {"name": "Poarta 1",               "x": 905, "y": 160, "kind": "gate",     "zone": "airside",  "area": "gate_area"},
-    "gate_2":         {"name": "Poarta 2",               "x": 905, "y": 440, "kind": "gate",     "zone": "airside",  "area": "gate_area"},
-}
+NODES = {}
+for _id, _name, _kind, _zone_id, _s, _side in PLACES:
+    NODES[_id] = {"name": _name, "kind": _kind, "zone": _zone_id, "s": _s, "side": _side,
+                  "x": s_to_x(_s), "y": CORRIDOR_Y - _side * SPUR_PX, "area": _area(_kind, _zone_id, _s)}
+    if _side != 0:
+        NODES["wp_" + _id] = {"name": f"Coridor, in dreptul: {_name}", "kind": "waypoint", "zone": _zone_id,
+                              "s": _s, "side": 0, "x": s_to_x(_s), "y": CORRIDOR_Y,
+                              "area": _area("waypoint", _zone_id, _s)}
 
-# (de la, la, metri, ambele_sensuri). SIMULAT: distantele vin de la C (T21).
-EDGES = [
-    ("entrance", "wp_hall", 40, True),
-    ("wp_hall", "cafe_public", 25, True),
-    ("wp_hall", "toilet_a", 30, True),
-    ("wp_hall", "checkin", 45, True),
-    ("checkin", "security_in", 50, True),
-    ("wp_hall", "security_in", 55, True),
+# Nodurile de pe coridor, de la intrare spre porti.
+CORRIDOR = sorted((n for n, v in NODES.items() if v["side"] == 0), key=lambda n: NODES[n]["s"])
+
+# (de la, la, metri, ambele_sensuri)
+EDGES = []
+for _a, _b in zip(CORRIDOR, CORRIDOR[1:]):
     # Securitatea: un singur sens. Dupa ea nu exista drum inapoi in zona publica.
-    ("security_in", "security_out", 20, False),
-    ("security_out", "wp_airside", 30, True),
-    ("wp_airside", "kfc", 25, True),
-    ("wp_airside", "shop_duty_free", 25, True),
-    ("wp_airside", "toilet_b", 35, True),
-    ("wp_airside", "gate_1", 60, True),
-    ("wp_airside", "gate_2", 60, True),
-]
+    _both = not (_a == "security_in" and _b == "security_out")
+    EDGES.append((_a, _b, NODES[_b]["s"] - NODES[_a]["s"], _both))
+for _id, _name, _kind, _zone_id, _s, _side in PLACES:
+    if _side != 0:
+        EDGES.append(("wp_" + _id, _id, SPUR_M, True))
 
 WALK_M_PER_MIN = 60  # pas de pasager cu bagaj de mana
 
@@ -87,6 +132,29 @@ def _adjacency():
 
 
 ADJ = _adjacency()
+
+
+# ---------------------------------------------------------------------------
+# Localizare live: GPS (lat, lon) -> s (metri de la intrare) -> nod pe coridor
+# ---------------------------------------------------------------------------
+def _geo_axis():
+    lat0, lon0 = GEO["origin"]
+    k = math.cos(math.radians(lat0))  # metri pe grad de longitudine scad cu latitudinea
+    ex = (GEO["axis_end"][1] - lon0) * 111320 * k
+    ny = (GEO["axis_end"][0] - lat0) * 111320
+    length = math.hypot(ex, ny)
+    return {"lat0": lat0, "lon0": lon0, "k": k, "ux": ex / length, "uy": ny / length}
+
+
+GEO_AXIS = _geo_axis()  # trimis si in browser, ca JS sa calculeze identic
+
+
+def geo_to_s(lat, lon):
+    """Metri de la intrare, de-a lungul coridorului (proiectie pe axa)."""
+    a = GEO_AXIS
+    ex = (lon - a["lon0"]) * 111320 * a["k"]
+    ny = (lat - a["lat0"]) * 111320
+    return ex * a["ux"] + ny * a["uy"]
 
 # ---------------------------------------------------------------------------
 # T4 - Date simulate: zboruri, reguli, program
@@ -147,6 +215,35 @@ def tool_advance_state(session, new_state):
     elif new_state == "BOARDING":
         session["position"] = FLIGHTS.get(session["flight"], {}).get("gate", session["position"])
     return {"ok": True, "state": session["state"], "position": session["position"]}
+
+
+# ---------------------------------------------------------------------------
+# Localizare live: s (metri de la intrare, din GPS) -> nod din graf
+# ---------------------------------------------------------------------------
+# Peste acest s, GPS-ul arata clar zona de dupa control (mijlocul securitatii + 3 m marja).
+SECURITY_PASSED_S = (NODES["security_in"]["s"] + NODES["security_out"]["s"]) / 2 + 3
+
+
+def locate(s, state):
+    """Nodul de pe coridor cel mai apropiat de s, tinand cont de etapa calatoriei.
+
+    Inainte de control pasagerul ramane in zona publica (cel mult la intrarea in control);
+    daca GPS-ul il arata clar dupa control, `suggest_security` = True si aplicatia il intreaba.
+    Dupa control nu se mai poate intoarce: zgomotul GPS nu il muta inapoi in zona publica.
+    """
+    passed = STATES.index(state) >= STATES.index("THROUGH_SECURITY")
+    zone = "airside" if passed else "landside"
+    candidates = [n for n in CORRIDOR if NODES[n]["zone"] == zone]
+    node = min(candidates, key=lambda n: abs(NODES[n]["s"] - s))
+    return {"node": node, "suggest_security": (not passed) and s >= SECURITY_PASSED_S}
+
+
+def apply_live_position(session, s):
+    """Muta pasagerul pe nodul dat de GPS. Modifica `session` pe loc."""
+    loc = locate(s, session["state"])
+    changed = loc["node"] != session["position"]
+    session["position"] = loc["node"]
+    return {**loc, "changed": changed}
 
 
 # ---------------------------------------------------------------------------
@@ -491,6 +588,29 @@ def _self_test():
     for name, fn in DISPATCH.items():
         out = fn(s, "kfc") if name == "get_route" else fn(s)
         json.dumps(out)
+
+    # Geometrie: coridorul are lungimea masurata, iar traseul intrare -> poarta 1 o respecta
+    assert get_route(new_session(), "gate_1")["distance_m"] == TERMINAL_LENGTH_M
+
+    # Localizare live: punctele masurate cu S21 cad unde trebuie pe axa
+    assert abs(geo_to_s(*GEO["origin"])) < 0.01
+    assert abs(geo_to_s(*GEO["axis_end"]) - 67.3) < 0.5
+    assert abs(geo_to_s(44.312430, 23.877910) - 25.5) < 1   # "Inainte de securitate"
+    assert abs(geo_to_s(44.312400, 23.878082) - 39.1) < 1   # "Dupa securitate"
+    assert locate(-5, "ARRIVED")["node"] == "entrance"
+    assert locate(10, "ARRIVED")["node"] == "wp_checkin"
+    assert locate(25.5, "ARRIVED") == {"node": "security_in", "suggest_security": False}
+    # GPS-ul il arata dupa control, dar etapa nu e confirmata: ramane in zona publica si e intrebat
+    assert locate(39, "CHECKED_IN") == {"node": "security_in", "suggest_security": True}
+    # dupa control, zgomotul GPS nu il intoarce in zona publica
+    assert locate(20, "THROUGH_SECURITY") == {"node": "security_out", "suggest_security": False}
+    # iPhone-ul a supraestimat (98 m): limitat la capatul coridorului
+    assert locate(98, "THROUGH_SECURITY")["node"] == "gate_1"
+    s = new_session()
+    r = apply_live_position(s, 15)
+    assert r["changed"] and s["position"] == "wp_cafe_public"
+    assert not apply_live_position(s, 15.5)["changed"]
+    assert get_route(s, "gate_1")["reachable"]  # rutele pornesc si dintr-un punct de pe coridor
 
     print("OK")
 

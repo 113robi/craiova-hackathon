@@ -8,7 +8,9 @@ import datetime as dt
 import streamlit as st
 
 from agent import chat
-from airport_core import FLIGHTS, STATES, flight_status, new_session, next_step, tool_advance_state
+from airport_core import (FLIGHTS, STATES, apply_live_position, flight_status, get_route, new_session, next_step,
+                          tool_advance_state)
+from live_map import live_map
 from map_svg import render_map
 
 st.set_page_config(page_title="Airport Copilot - Craiova", page_icon="✈", layout="wide")
@@ -35,6 +37,7 @@ def reset():
     st.session_state.messages = []   # [{"role": "user"|"assistant", "content": str}]
     st.session_state.route = []
     st.session_state.highlight = []
+    st.session_state.suggest_security = False  # GPS-ul arata pasagerul dupa control, neconfirmat
 
 
 if "session" not in st.session_state:
@@ -102,7 +105,8 @@ if fs.get("found") and fs["delay_min"] > 0:
         f"({fs['gate_name']})."
     )
 
-col_chat, col_map = st.columns([1, 1.7], gap="large")
+# Harta prima: pe telefon coloanele se pun una sub alta, iar harta live trebuie sa fie sus.
+col_map, col_chat = st.columns([1.6, 1], gap="large")
 
 with col_chat:
     messages_box = st.container(height=460, autoscroll=True)
@@ -126,11 +130,46 @@ with col_chat:
     with messages_box:
         if not st.session_state.messages:
             st.info("Salut! Intreaba-ma unde gasesti ceva in terminal, cat timp mai ai pana la imbarcare "
-                    "sau ce urmeaza sa faci. Foloseste butoanele din stanga cand treci de o etapa.")
+                    "sau ce urmeaza sa faci. Porneste localizarea live de sub harta ca sa te vad pe harta.")
         for m in st.session_state.messages:
             with st.chat_message(m["role"]):
                 st.markdown(m["content"])
 
+def refresh_route():
+    """Dupa ce pasagerul s-a miscat, recalculeaza traseul spre aceeasi destinatie."""
+    route = st.session_state.route
+    if not route:
+        return
+    target = route[-1]
+    r = get_route(S, target)
+    st.session_state.route = r["path"] if r.get("reachable") and r["path"][-1] != S["position"] else []
+
+
+@st.fragment
+def map_panel():
+    # Fragment: o citire GPS noua reincarca doar harta, nu si chatul.
+    svg = render_map(S["position"], st.session_state.route, st.session_state.highlight)
+    fix = live_map(svg, S["state"])
+
+    if fix and fix.get("t") != st.session_state.get("last_fix_t"):
+        st.session_state.last_fix_t = fix["t"]
+        res = apply_live_position(S, float(fix["s"]))
+        st.session_state.suggest_security = res["suggest_security"]
+        if res["changed"]:
+            refresh_route()
+            st.rerun(scope="fragment")  # redeseneaza harta cu noua pozitie / noul traseu
+
+    if st.session_state.get("suggest_security") and STATES.index(S["state"]) < STATES.index("THROUGH_SECURITY"):
+        st.info("Localizarea arata ca ai trecut de controlul de securitate. Confirmi?")
+        if st.button("Da, am trecut de securitate", type="primary", key="confirm_security"):
+            if S["state"] == "ARRIVED":
+                tool_advance_state(S, "CHECKED_IN")  # a trecut fizic de control, deci check-in-ul e facut
+            tool_advance_state(S, "THROUGH_SECURITY")
+            st.session_state.suggest_security = False
+            st.session_state.route, st.session_state.highlight = [], []
+            say(f"Etapa actualizata: **{STATE_LABELS['THROUGH_SECURITY']}**. {next_step(S)['step']}")
+            st.rerun()  # reincarca toata pagina: etapele din stanga si chatul
+
+
 with col_map:
-    # st.image, nu st.html: in Streamlit 1.66 st.html nu afiseaza SVG-ul (testat), st.image da.
-    st.image(render_map(S["position"], st.session_state.route, st.session_state.highlight), width="stretch")
+    map_panel()

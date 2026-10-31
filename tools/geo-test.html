@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Test localizare terminal</title>
+<style>
+  :root {
+    --bg: #f4f6f8; --card: #ffffff; --fg: #12202e; --muted: #5b6b7a; --line: #d9e0e6;
+    --accent: #1d5fd1; --good: #12805c; --warn: #b7791f; --bad: #c53030;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f161d; --card: #17212b; --fg: #e6edf3; --muted: #93a4b4; --line: #2a3744;
+            --accent: #6ea2ff; --good: #3fbf8f; --warn: #e0a645; --bad: #f07272; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 16px/1.45 system-ui, "Segoe UI", Roboto, sans-serif;
+         padding: 16px max(16px, env(safe-area-inset-left)) 40px max(16px, env(safe-area-inset-right)); }
+  main { max-width: 560px; margin: 0 auto; display: grid; gap: 14px; }
+  h1 { font-size: 20px; margin: 4px 0 0; }
+  p { margin: 0; color: var(--muted); font-size: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: grid; gap: 10px; }
+  .acc { font: 700 52px/1 var(--mono); font-variant-numeric: tabular-nums; }
+  .acc small { font-size: 18px; font-weight: 500; color: var(--muted); }
+  .verdict { font-weight: 600; }
+  .good { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 14px; }
+  dt { color: var(--muted); } dd { margin: 0; font-family: var(--mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  button, input { font: inherit; border-radius: 8px; }
+  button { background: var(--accent); color: #fff; border: 0; padding: 12px 14px; font-weight: 600; }
+  button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .row > * { flex: 1 1 140px; min-width: 0; }
+  input { padding: 11px 12px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chips button { flex: 0 0 auto; padding: 6px 10px; font-size: 14px; background: var(--bg); color: var(--fg); border: 1px solid var(--line); font-weight: 500; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 5px 4px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-family: system-ui, sans-serif; }
+  .scroll { overflow-x: auto; }
+  #err { color: var(--bad); font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <div>
+    <h1>Test localizare in terminal</h1>
+    <p>Lasati pagina deschisa si mergeti prin terminal. La fiecare punct cunoscut (intrare, check-in, securitate...) apasati pe numele lui ca sa salvati citirea.</p>
+  </div>
+
+  <section class="card" aria-live="polite">
+    <div class="acc"><span id="acc">--</span> <small>m precizie</small></div>
+    <div id="verdict" class="verdict">Astept prima pozitie... (permiteti accesul la locatie)</div>
+    <div id="err" hidden></div>
+    <dl>
+      <dt>Latitudine</dt><dd id="lat">--</dd>
+      <dt>Longitudine</dt><dd id="lon">--</dd>
+      <dt>Actualizari</dt><dd id="count">0</dd>
+      <dt>Ultima acum</dt><dd id="age">--</dd>
+      <dt>Miscare fata de start</dt><dd id="moved">--</dd>
+    </dl>
+  </section>
+
+  <section class="card">
+    <strong>Salveaza punctul in care esti</strong>
+    <div class="chips" id="chips"></div>
+    <div class="row">
+      <input id="label" placeholder="alt nume (ex. toaleta)" aria-label="Nume punct">
+      <button id="mark" type="button">Salveaza</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="row">
+      <strong style="align-self:center">Puncte salvate</strong>
+      <button id="copy" class="secondary" type="button">Copiaza rezultatele</button>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Punct</th><th>Ora</th><th>Precizie</th><th>Lat</th><th>Lon</th></tr></thead>
+        <tbody id="rows"><tr><td colspan="5">Niciun punct inca.</td></tr></tbody>
+      </table>
+    </div>
+    <p id="copied"></p>
+  </section>
+</main>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const POINTS = ["Intrare", "Check-in", "Inainte de securitate", "Dupa securitate", "Poarta"];
+  let last = null, start = null, count = 0;
+  const marks = [];
+
+  function metersBetween(a, b) {
+    const R = 6371000, toRad = (d) => d * Math.PI / 180;
+    const dLat = toRad(b.lat - a.lat), dLon = toRad(b.lon - a.lon);
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+
+  function verdict(acc) {
+    if (acc <= 10) return ["good", "Foarte bun: se pot deosebi zonele terminalului."];
+    if (acc <= 20) return ["warn", "Acceptabil: zona publica vs zona de plecari, nu locuri exacte."];
+    return ["bad", "Slab: punctul poate sari intre zone. Nu ajunge singur."];
+  }
+
+  function onPos(p) {
+    $("err").hidden = true;
+    count++;
+    last = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy, t: p.timestamp };
+    if (!start) start = last;
+    $("acc").textContent = Math.round(last.acc);
+    const [cls, text] = verdict(last.acc);
+    $("verdict").className = "verdict " + cls;
+    $("verdict").textContent = text;
+    $("lat").textContent = last.lat.toFixed(6);
+    $("lon").textContent = last.lon.toFixed(6);
+    $("count").textContent = count;
+    $("moved").textContent = Math.round(metersBetween(start, last)) + " m";
+  }
+
+  function onErr(e) {
+    const msg = {
+      1: "Accesul la locatie a fost refuzat. Activati-l din setarile browserului pentru acest site.",
+      2: "Pozitia nu e disponibila. Porniti Locatia si Wi-Fi-ul telefonului.",
+      3: "Pozitia nu a venit la timp. Mai asteptati cateva secunde.",
+    }[e.code] || e.message;
+    $("err").textContent = msg;
+    $("err").hidden = false;
+  }
+
+  setInterval(() => {
+    if (last) $("age").textContent = Math.round((Date.now() - last.t) / 1000) + " s in urma";
+  }, 1000);
+
+  function save(name) {
+    if (!last) { $("copied").textContent = "Inca nu exista o pozitie de salvat."; return; }
+    marks.push({ name, ...last, time: new Date().toLocaleTimeString("ro-RO") });
+    $("rows").innerHTML = "";
+    for (const m of marks) {
+      const tr = document.createElement("tr");
+      for (const v of [m.name, m.time, Math.round(m.acc) + " m", m.lat.toFixed(6), m.lon.toFixed(6)]) {
+        const td = document.createElement("td"); td.textContent = v; tr.appendChild(td);
+      }
+      $("rows").appendChild(tr);
+    }
+    $("copied").textContent = "Salvat: " + name;
+  }
+
+  for (const name of POINTS) {
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = name; b.onclick = () => save(name);
+    $("chips").appendChild(b);
+  }
+  $("mark").onclick = () => { const v = $("label").value.trim(); if (v) { save(v); $("label").value = ""; } };
+
+  $("copy").onclick = async () => {
+    const text = ["punct;ora;precizie_m;lat;lon",
+      ...marks.map((m) => [m.name, m.time, Math.round(m.acc), m.lat.toFixed(6), m.lon.toFixed(6)].join(";"))].join("\n");
+    try { await navigator.clipboard.writeText(text); $("copied").textContent = "Copiat. Lipiti-l in chat."; }
+    catch { $("copied").textContent = text; }
+  };
+
+  if (!window.isSecureContext) {
+    onErr({ message: "Pagina nu e pe HTTPS, deci browserul blocheaza locatia. Deschideti linkul https." });
+  } else if (!("geolocation" in navigator)) {
+    onErr({ message: "Browserul nu suporta localizarea." });
+  } else {
+    navigator.geolocation.watchPosition(onPos, onErr, { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
+    if ("wakeLock" in navigator) navigator.wakeLock.request("screen").catch(() => {});
+  }
+</script>
+</body>
+</html>
