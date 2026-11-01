@@ -1,0 +1,21 @@
+# Configurarea serverului Streamlit pentru Airport Copilot.
+
+[server]
+# Serverul asculta doar pe calculatorul local. De pe telefon se ajunge prin tunelul HTTPS (cloudflared),
+# deci aplicatia nu e accesibila pe HTTP simplu din reteaua locala.
+address = "localhost"
+# Poza biletului: cel mult 10 MB (aceeasi limita ca MAX_IMAGE_MB din ticket.py).
+maxUploadSize = 10
+# Valorile implicite, scrise explicit ca sa nu fie dezactivate din greseala.
+enableXsrfProtection = true
+enableCORS = true
+
+[client]
+# Fara meniul de dezvoltator (Deploy, Rerun, Clear cache); raman doar intrarile din st.set_page_config.
+toolbarMode = "minimal"
+# La o eroare neprevazuta, pagina arata un mesaj generic; detaliile apar doar in consola serverului.
+showErrorDetails = "none"
+
+[browser]
+# Fara statistici de utilizare trimise catre Streamlit.
+gatherUsageStats = false

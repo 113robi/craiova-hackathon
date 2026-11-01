@@ -7,8 +7,8 @@ Doua orientari, desenate amandoua in acelasi SVG (textele raman drepte in ambele
   <g class="acm-orient" data-flip="0">  intrarea jos (nordul sus): cum vezi holul cand intri din parcare
   <g class="acm-orient" data-flip="1">  aceeasi harta rotita cu 180 de grade (intrarea sus), pentru pasagerul
                                         intors spre intrare / parcare
-Cu harta fixa, pasagerul intors spre intrare vedea totul in oglinda: mergea spre dreapta, iar punctul
-"Esti aici" pleca spre stanga. live_map.py arata orientarea potrivita dupa busola telefonului (sau dupa
+Cu o harta fixa, pasagerul intors spre intrare ar vedea totul in oglinda: merge spre dreapta, iar punctul
+"Esti aici" se misca spre stanga. live_map.py arata orientarea potrivita dupa busola telefonului (sau dupa
 butonul "Intoarce harta"). Fara JavaScript se vede doar prima orientare (a doua are display="none").
 
 Pe locuri se poate apasa: fiecare e un <g class="acm-place" data-node="<id>">; live_map.py

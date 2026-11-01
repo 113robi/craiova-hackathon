@@ -1,4 +1,4 @@
-"""Genereaza un bilet de imbarcare de EXEMPLU (PNG) pentru demo-ul cu scanarea biletului.
+"""Genereaza un bilet de imbarcare de EXEMPLU (PNG), pentru testarea scanarii biletului fara un bilet real.
 
 Biletul e marcat clar "EXEMPLU": nu e un bilet real si nu are un cod de bare valid.
 Ora implicita de plecare: peste ~2 ore, rotunjita la 5 minute, ca numaratoarea din aplicatie sa aiba sens.
@@ -37,7 +37,7 @@ def _departure(args, now):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Bilet de imbarcare de EXEMPLU pentru demo.")
+    p = argparse.ArgumentParser(description="Bilet de imbarcare de EXEMPLU, pentru testarea scanarii biletului.")
     p.add_argument("--zbor", default="W6 5678")
     p.add_argument("--destinatie", default="ROMA")
     p.add_argument("--cod", default="FCO", help="codul IATA al destinatiei")

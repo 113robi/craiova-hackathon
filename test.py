@@ -1,3 +1,8 @@
+"""Verificare rapida a cheii Gemini din .env: trimite o singura cerere si afiseaza raspunsul.
+
+Rulare:  python test.py
+"""
+
 import os
 from dotenv import load_dotenv
 from google import genai

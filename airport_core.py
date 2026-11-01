@@ -1,13 +1,26 @@
-"""Nucleul Airport Copilot: harta terminalului ca graf, etapele calatoriei, tool-uri, date.
+"""Nucleul Airport Copilot: datele terminalului, graful de trasee, etapele calatoriei, zborurile
+si tool-urile pe care le apeleaza agentul AI.
 
-Nu importa nimic din agent.py / map_svg.py / app.py. Toate celelalte depind de el.
-Rulare autotest:  python airport_core.py   -> afiseaza OK
+Foloseste doar biblioteca standard si nu importa nimic din agent.py / map_svg.py / app.py;
+toate celelalte module depind de el. Autotest:  python airport_core.py   -> afiseaza OK
 
-Ce e real si ce e simulat (spuneti asta in pitch):
-  MASURAT pe teren (31.10.2026, Samsung S21, doua sesiuni + conturul cladirii din OpenStreetMap):
-    forma holului si pozitiile intrarii, toaletei, check-in-ului, biroului de informatii,
-    securitatii, cafenelei si portii.
-  SIMULAT: KFC (pus doar pentru demo), starea live a zborurilor (intarzieri), regulile de imbarcare.
+Continut, in ordine:
+  - geometria terminalului (masurata) si scara desenului
+  - graful: NODES, EDGES, ADJ
+  - GPS (lat, lon) -> metri de la intrare (geo_to_s), pozitia laterala a drumului, test punct-in-contur
+  - zborurile si regulile de imbarcare (FLIGHTS, RULES)
+  - etapele calatoriei si sesiunea (STATES, new_session, tool_advance_state)
+  - localizarea live: metri -> nod din graf (locate, apply_live_position)
+  - utilitare: ore, Dijkstra
+  - tool-urile: get_route, list_places, flight_status, next_step
+  - interfata cu LLM-ul: TOOLS, DISPATCH, SYSTEM_PROMPT, session_context
+  - autotestul
+
+Ce e real si ce e simulat:
+  MASURAT pe teren (31.10.2026, Samsung S21, doua sesiuni): drumul de mers si pozitiile intrarii,
+    toaletei, check-in-ului, biroului de informatii, securitatii, cafenelei si portii.
+  Din OpenStreetMap: contururile cladirilor.
+  SIMULAT: KFC (nu exista in terminal), starea live a zborurilor (intarzieri), regulile de imbarcare.
 """
 
 import heapq
@@ -56,7 +69,7 @@ SIDE_PLACES = [
     ("cafe",     "Cafenea (zona plecari)", "food",     (55, 0),  "wp_cafe"),      # partea dinspre intrare
     ("kfc",      "KFC (zona plecari)",     "food",     (55, 13), "wp_cafe"),      # fata in fata cu cafeneaua
 ]
-SIMULATED_PLACES = {"kfc"}  # SIMULAT: nu exista in terminal, e pus doar pentru demo
+SIMULATED_PLACES = {"kfc"}  # SIMULAT: nu exista in terminal; NODES[id]["simulated"] il marcheaza
 
 # Contururile cladirilor din OpenStreetMap, in coordonate (s, d), pentru desen.
 OUTLINE_OLD_HALL = [  # terminalul vechi (holul public)
@@ -97,7 +110,7 @@ def d_to_y(d):
 
 
 # ---------------------------------------------------------------------------
-# T1 - NODES si EDGES
+# Graful: NODES (locuri si puncte de pe drum) si EDGES (drumuri intre ele, in metri)
 #   kind  = tipul locului; "waypoint" = punct pe drumul principal, nu e loc pentru pasager
 #   zone  = "landside" (inainte de securitate) / "airside" (dupa securitate)
 #   side  = 0 pe drumul principal, +1 deasupra lui pe harta, -1 dedesubt
@@ -202,10 +215,10 @@ def point_in_outline(s, d, outline, tolerance=0.5):
 
 
 # ---------------------------------------------------------------------------
-# T4 - Zboruri, reguli, program
+# Zboruri, reguli de imbarcare, program
 # ---------------------------------------------------------------------------
-# SIMULAT: starea "live" a zborurilor din demo (intarziere, poarta). Ora programata vine de pe
-# biletul scanat, daca exista; altfel se foloseste "departure" de aici.
+# SIMULAT: starea live a zborurilor (intarziere, poarta). Aici s-ar conecta o sursa reala de date.
+# Ora programata vine de pe biletul scanat, daca exista; altfel se foloseste "departure" de aici.
 FLIGHTS = {
     "W6 1234": {"destination": "Londra Luton", "departure": "07:30", "delay_min": 0, "gate": "gate_1"},
     "W6 5678": {"destination": "Roma", "departure": "09:00", "delay_min": 120, "gate": "gate_1"},
@@ -213,11 +226,12 @@ FLIGHTS = {
 DEFAULT_GATE = "gate_1"   # terminalul are o singura poarta
 
 RULES = {
-    # SIMULAT - folosite doar cand biletul nu are tiparite ora de imbarcare / inchiderea portii
+    # SIMULAT: folosite doar cand biletul nu are tiparite ora de imbarcare / inchiderea portii
     "boarding_opens_min_before": 40,
     "gate_closes_min_before": 15,
-    # Reg. (CE) 261/2004 art. 6: asistenta (masa, racoritoare) de la 2h intarziere
-    # pentru zboruri <= 1500 km. DE VERIFICAT pentru fiecare zbor; nu e despagubire in bani.
+    # Reg. (CE) 261/2004, art. 6: dreptul la asistenta (masa, racoritoare) incepe la 2 h de intarziere
+    # pentru zborurile de pana la 1500 km (3 h sau 4 h pentru zboruri mai lungi). Aici pragul de 2 h
+    # se aplica tuturor zborurilor. E vorba de asistenta, nu de despagubirea in bani.
     "care_after_delay_min": 120,
 }
 
@@ -225,7 +239,7 @@ RULES = {
 OPENING_HOURS = {}
 
 # ---------------------------------------------------------------------------
-# T3 - Starile calatoriei si sesiunea
+# Etapele calatoriei si sesiunea pasagerului
 # ---------------------------------------------------------------------------
 STATES = ["ARRIVED", "CHECKED_IN", "THROUGH_SECURITY", "BOARDING"]
 
@@ -293,7 +307,8 @@ def apply_live_position(session, s, at=None):
     """
     loc = locate(s, session["state"])
     node = loc["node"]
-    if (at in NODES and NODES[at]["kind"] != "waypoint" and NODES[at]["zone"] == NODES[node]["zone"]
+    if (isinstance(at, str) and at in NODES and NODES[at]["kind"] != "waypoint"
+            and NODES[at]["zone"] == NODES[node]["zone"]
             and abs(NODES[at]["s"] - s) <= AT_MAX_M):
         node = at
     changed = node != session["position"]
@@ -363,7 +378,7 @@ def _place_info(node_id, dist, now):
 
 
 # ---------------------------------------------------------------------------
-# T5 - Tool-uri (deterministe; primesc session + argumentele de la LLM)
+# Tool-uri deterministe: primesc sesiunea + argumentele alese de LLM si intorc dict-uri serializabile JSON
 # ---------------------------------------------------------------------------
 def get_route(session, to):
     """Traseul cel mai scurt de la pozitia pasagerului.
@@ -529,7 +544,7 @@ def next_step(session):
 
 
 # ---------------------------------------------------------------------------
-# T6 - TOOLS (declaratii pentru LLM), DISPATCH, SYSTEM_PROMPT
+# Interfata cu LLM-ul: TOOLS (declaratiile tool-urilor), DISPATCH (nume -> functie), SYSTEM_PROMPT
 # `session` NU apare in parametri: il adauga agent.py la executie.
 # ---------------------------------------------------------------------------
 _PLACE_IDS = [n for n, v in NODES.items() if v["kind"] in PLACE_KINDS]
@@ -619,7 +634,7 @@ def session_context(session):
 
 
 # ---------------------------------------------------------------------------
-# T7 - Autotest (fara Gemini, fara internet)
+# Autotest (fara Gemini, fara internet):  python airport_core.py
 # ---------------------------------------------------------------------------
 def _self_test():
     import json
@@ -733,6 +748,7 @@ def _self_test():
     assert apply_live_position(s, 50, at="cafe")["node"] == "security_in"     # alta zona: ignorat
     assert apply_live_position(s, 1, at="wp_info")["node"] == "wp_entrance"   # waypoint: ignorat
     assert apply_live_position(s, 1, at="nu_exista")["node"] == "wp_entrance"
+    assert apply_live_position(s, 1, at=["toilet"])["node"] == "wp_entrance"  # tip gresit (vine din browser)
 
     print("OK")
 

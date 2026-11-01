@@ -50,6 +50,14 @@ Reguli:
 Nu extrage numele pasagerului."""
 
 MAX_SIDE_PX = 1600  # pozele de pe telefon se micsoreaza inainte de trimitere
+MAX_IMAGE_MB = 10   # aceeasi limita ca la incarcarea din pagina (app.py)
+# Protectie de memorie: o imagine mica pe disc se poate decomprima in miliarde de pixeli.
+# Pozele JPEG se decodeaza direct la rezolutie redusa, deci limita conteaza mai ales pentru PNG / WebP.
+MAX_PIXELS = 60_000_000
+
+
+class ImageTooLarge(ValueError):
+    pass
 
 
 def _clean_time(value):
@@ -83,7 +91,9 @@ def _clean_seat(value):
 
 
 def _clean_text(value, max_len=40):
-    text = re.sub(r"\s+", " ", (value or "")).strip()
+    # Doar litere, cifre, spatii si - ' . , ( ) /: textul ajunge in mesaje afisate ca Markdown.
+    text = re.sub(r"[^\w\s\-'.,()/]|_", "", value or "")
+    text = re.sub(r"\s+", " ", text).strip()
     return text[:max_len] or None
 
 
@@ -123,7 +133,13 @@ def _prepare_image(image_bytes):
     """Deschide poza, o roteste dupa EXIF, o micsoreaza si o trimite ca JPEG."""
     from PIL import Image, ImageOps
 
-    img = Image.open(io.BytesIO(image_bytes))
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+    except Image.DecompressionBombError as exc:
+        raise ImageTooLarge(str(exc)) from exc
+    img.draft("RGB", (MAX_SIDE_PX, MAX_SIDE_PX))   # JPEG: decodare direct la o rezolutie apropiata de cea finala
+    if img.width * img.height > MAX_PIXELS:
+        raise ImageTooLarge(f"{img.width}x{img.height}")
     img = ImageOps.exif_transpose(img).convert("RGB")
     img.thumbnail((MAX_SIDE_PX, MAX_SIDE_PX))
     out = io.BytesIO()
@@ -132,8 +148,13 @@ def _prepare_image(image_bytes):
 
 
 def read_ticket(image_bytes):
+    if len(image_bytes) > MAX_IMAGE_MB * 1024 * 1024:
+        return {"ok": False, "error": f"Poza e prea mare (peste {MAX_IMAGE_MB} MB). Incearca o captura de ecran."}
     try:
         jpeg = _prepare_image(image_bytes)
+    except ImageTooLarge:
+        return {"ok": False, "error": "Poza are o rezolutie prea mare. Fa o captura de ecran a biletului "
+                                      "sau o poza la rezolutie normala."}
     except Exception:  # noqa: BLE001 - fisier care nu e imagine, imagine corupta
         return {"ok": False, "error": "Nu pot deschide imaginea. Incearca o poza JPG sau PNG."}
     try:
@@ -187,6 +208,16 @@ def _self_test():
     t = parse_ticket({**good, "boarding_time": "20:10", "date": "31 OCT", "seat": ""})["ticket"]
     assert t["boarding"] is None and t["date"] is None and t["seat"] is None
     assert not parse_ticket("nu e json")["ok"]
+    # Textul liber (orasul) pierde caracterele de formatare: ajunge in mesaje afisate ca Markdown
+    dest = parse_ticket({**good, "destination_city": "Roma *[x](http://a.b)* <b>$1$</b>"})["ticket"]["destination"]
+    assert dest and not set(dest) & set("*[]<>$_:`"), dest
+    # Imagine mica pe disc, dar cu prea multi pixeli: refuzata inainte de decodare si fara cerere la Gemini
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("1", (10000, 7000)).save(buf, format="PNG")
+    assert read_ticket(buf.getvalue())["error"].startswith("Poza are o rezolutie prea mare")
+    assert read_ticket(b"0" * (MAX_IMAGE_MB * 1024 * 1024 + 1))["error"].startswith("Poza e prea mare")
     print("OK")
 
 

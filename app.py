@@ -5,18 +5,43 @@ Rulare:  python -m streamlit run app.py
 
 import datetime as dt
 import hashlib
+import math
+import time
 
 import streamlit as st
 from streamlit.errors import StreamlitAPIException
 
 from agent import chat
-from airport_core import (FLIGHTS, NODES, STATES, apply_live_position, flight_status, get_route, new_session,
-                          next_step, tool_advance_state)
+from airport_core import (CLICKABLE, FLIGHTS, NODES, STATES, apply_live_position, flight_status, get_route,
+                          new_session, next_step, tool_advance_state)
 from live_map import live_map
 from map_svg import render_map
-from ticket import describe_ticket, read_ticket
+from ticket import MAX_IMAGE_MB, describe_ticket, read_ticket
 
-st.set_page_config(page_title="Airport Copilot - Craiova", page_icon="✈", layout="wide")
+REPO_URL = "https://github.com/113robi/craiova-hackathon"
+
+st.set_page_config(
+    page_title="Airport Copilot - Aeroportul Craiova", page_icon="✈", layout="wide",
+    # Meniul din dreapta sus arata doar aceste intrari (meniul de dezvoltator e ascuns din .streamlit/config.toml)
+    menu_items={
+        "About": "**Airport Copilot**: asistent pentru pasagerii Aeroportului International Craiova. "
+                 "Proiect Craiova Hackathon V2.0, echipa Speranta Albesti.",
+        "Report a bug": f"{REPO_URL}/issues",
+    },
+)
+# Pe telefon: titlu mai mic si mai putin spatiu deasupra lui, ca harta sa apara fara derulare.
+st.html("""<style>
+@media (max-width: 640px) {
+  [data-testid="stMainBlockContainer"] { padding-top: 4rem !important; }
+  [data-testid="stMainBlockContainer"] h1 { font-size: 2rem !important; }
+}
+</style>""")
+
+MAX_MESSAGE_CHARS = 300   # lungimea maxima a unei intrebari in chat
+# Cereri AI (mesaje in chat + scanari de bilet) acceptate intr-un minut, pentru fiecare sesiune. Un mesaj
+# consuma 2-3 cereri Gemini, iar cheia gratuita are o limita pe minut; traseele de pe harta nu folosesc AI.
+AI_REQUESTS_PER_MIN = 5
+MAX_FIX_S_M = 50_000      # o pozitie GPS mai departe de atat de intrare e o valoare invalida
 
 STATE_LABELS = {
     "ARRIVED": "Am ajuns la aeroport",
@@ -60,12 +85,49 @@ def reset():
 
 if "session" not in st.session_state:
     reset()
+if "ai_calls" not in st.session_state:
+    st.session_state.ai_calls = []   # momentele cererilor AI; nu se sterge la "Calatorie noua"
 
 S = st.session_state.session
+
+# Confirmarea ultimei actiuni: setata inainte de st.rerun(), afisata in rularea urmatoare.
+_toast = st.session_state.pop("toast", None)
+if _toast:
+    st.toast(_toast[0], icon=_toast[1])
 
 
 def say(text):
     st.session_state.messages.append({"role": "assistant", "content": text})
+
+
+def confirm(text, icon="✅"):
+    """Toast de confirmare pentru o actiune (pe telefon, chatul e sub harta si nu se vede)."""
+    st.session_state.toast = (text, icon)
+
+
+def ai_wait_seconds():
+    """0 daca pasagerul poate face acum o cerere AI (si o inregistreaza), altfel cate secunde mai are de asteptat."""
+    now = time.monotonic()
+    recent = [t for t in st.session_state.ai_calls if now - t < 60]
+    if len(recent) >= AI_REQUESTS_PER_MIN:
+        st.session_state.ai_calls = recent
+        return max(1, math.ceil(60 - (now - recent[0])))
+    st.session_state.ai_calls = recent + [now]
+    return 0
+
+
+def valid_fix(fix):
+    """Pozitia trimisa de browser, verificata: vine de la client, deci poate fi modificata."""
+    if not isinstance(fix, dict):
+        return None
+    try:
+        s = float(fix.get("s"))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(s) or abs(s) > MAX_FIX_S_M:
+        return None
+    at = fix.get("at")
+    return {"s": s, "at": at if isinstance(at, str) else None, "t": fix.get("t")}
 
 
 def real_time_on():
@@ -95,8 +157,8 @@ def flight_summary(fs):
 
 def navigate_to(node_id):
     """Traseu spre un loc apasat pe harta sau ales din butoane (fara AI)."""
-    if node_id not in NODES:
-        return
+    if not isinstance(node_id, str) or node_id not in CLICKABLE:
+        return  # id-ul vine si din browser: se accepta doar locurile de pe harta
     name = NODES[node_id]["name"]
     st.session_state.messages.append({"role": "user", "content": f"Du-ma la: {name}"})
     r = get_route(S, node_id)
@@ -157,6 +219,7 @@ with st.sidebar:
                 st.session_state.route, st.session_state.highlight = [], []
                 st.session_state.nav_target = None
                 say(f"Etapa actualizata: **{STATE_LABELS[state]}**. {next_step(S)['step']}")
+                confirm(f"Etapa actualizata: {STATE_LABELS[state]}")
                 st.rerun()
             else:
                 st.error(res["error"])
@@ -164,6 +227,7 @@ with st.sidebar:
     st.divider()
     if st.button("Calatorie noua", width="stretch"):
         reset()
+        confirm("Calatorie noua: etapele, traseul si chatul au fost resetate.", "\U0001F504")
         st.rerun()
     st.caption("Holul si locurile sunt masurate pe teren. Simulate pentru demo: KFC, intarzierile zborurilor "
                "si regulile de imbarcare cand biletul nu le are tiparite.")
@@ -173,7 +237,8 @@ with st.sidebar:
 # Pagina principala
 # ---------------------------------------------------------------------------
 st.title("✈ Airport Copilot")
-st.caption("Asistentul tau in Aeroportul International Craiova")
+st.caption("Asistentul tau in Aeroportul International Craiova. Zborul, bagajul si etapa calatoriei se aleg "
+           "din bara laterala (pe telefon: butonul » din stanga sus).")
 
 fs = flight_status(S)
 has_ticket = bool(S.get("ticket") and S["ticket"]["flight"] == S["flight"])
@@ -183,15 +248,24 @@ if fs.get("found") and ((fs["delay_min"] or 0) > 0 or has_ticket):
 with st.expander("\U0001F3AB Scaneaza biletul de imbarcare", expanded=bool(st.session_state.ticket_result)):
     st.caption("Fa o poza biletului (pe hartie sau pe ecranul altui telefon) sau incarca o captura de ecran. "
                "Citim zborul si orele tiparite; numele tau nu se pastreaza si poza nu se salveaza.")
-    upload = st.file_uploader("Poza biletului", type=["png", "jpg", "jpeg", "webp"],
+    upload = st.file_uploader("Poza biletului", type=["png", "jpg", "jpeg", "webp"], max_upload_size=MAX_IMAGE_MB,
                               key=f"ticket_upload_{st.session_state.upload_n}", label_visibility="collapsed")
-    if upload is not None:
+    if upload is None:
+        # Poza a fost scoasa din camp: rezultatul ei nu mai e afisat, iar aceeasi poza se poate incarca din nou.
+        st.session_state.ticket_result = None
+        st.session_state.ticket_hash = None
+    else:
         data = upload.getvalue()
         digest = hashlib.sha256(data).hexdigest()
         if digest != st.session_state.ticket_hash:
             st.session_state.ticket_hash = digest
-            with st.spinner("Citesc biletul..."):
-                st.session_state.ticket_result = read_ticket(data)
+            wait = ai_wait_seconds()
+            if wait:
+                st.session_state.ticket_result = {
+                    "ok": False, "error": f"Prea multe cereri intr-un minut. Incearca din nou peste {wait} s."}
+            else:
+                with st.spinner("Citesc biletul..."):
+                    st.session_state.ticket_result = read_ticket(data)
 
     result = st.session_state.ticket_result
     if result and result["ok"]:
@@ -207,6 +281,7 @@ with st.expander("\U0001F3AB Scaneaza biletul de imbarcare", expanded=bool(st.se
             st.session_state.ticket_hash = None
             st.session_state.upload_n += 1
             say("\U0001F3AB Am citit biletul. " + flight_summary(flight_status(S)))
+            confirm(f"Bilet confirmat: zborul {t['flight']}", "\U0001F3AB")
             st.rerun()
         if c2.button("Nu e corect, incerc alta poza", width="stretch"):
             st.session_state.ticket_result = None
@@ -215,6 +290,10 @@ with st.expander("\U0001F3AB Scaneaza biletul de imbarcare", expanded=bool(st.se
             st.rerun()
     elif result:
         st.error(result["error"])
+        if st.button("Incearca din nou", key="ticket_retry"):
+            st.session_state.ticket_hash = None   # aceeasi poza se citeste din nou
+            st.session_state.ticket_result = None
+            st.rerun()
 
     if S.get("ticket"):
         st.success("Bilet confirmat: " + describe_ticket(S["ticket"]))
@@ -224,6 +303,7 @@ with st.expander("\U0001F3AB Scaneaza biletul de imbarcare", expanded=bool(st.se
                        "Orele se calculeaza ca si cum zborul ar fi azi.")
         if st.button("Sterge biletul"):
             S["ticket"] = None
+            confirm("Biletul a fost sters.", "\U0001F5D1")
             st.rerun()
 
 # Harta prima: pe telefon coloanele se pun una sub alta, iar harta live trebuie sa fie sus.
@@ -233,21 +313,28 @@ with col_chat:
     messages_box = st.container(height=460, autoscroll=True)
 
     clicked = None
-    cols = st.columns(2)
-    for i, q in enumerate(SUGGESTIONS):
-        if cols[i % 2].button(q, key=f"sugg_{i}", width="stretch"):
-            clicked = q
+    # Rand care trece pe linia urmatoare: textul intrebarilor se vede intreg pe orice latime de ecran.
+    with st.container(horizontal=True, gap="small"):
+        for i, q in enumerate(SUGGESTIONS):
+            if st.button(q, key=f"sugg_{i}"):
+                clicked = q
 
-    prompt = st.chat_input("Intreaba ceva despre aeroport...") or clicked
+    prompt = st.chat_input("Intreaba ceva despre aeroport...", max_chars=MAX_MESSAGE_CHARS) or clicked
+    prompt = (prompt or "").strip()[:MAX_MESSAGE_CHARS]   # limita se aplica si pe server, nu doar in browser
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
-        with messages_box:
-            with st.spinner("Ma gandesc..."):
-                result = chat(S, prompt)
-        say(result["text"])
-        st.session_state.route = result["route"]
-        st.session_state.highlight = result["highlight"]
-        st.session_state.nav_target = result["route"][-1] if result["route"] else None
+        wait = ai_wait_seconds()
+        if wait:
+            say(f"Ai trimis multe intrebari intr-un minut. Incearca din nou peste {wait} s. Pana atunci, traseele "
+                "merg si fara chat: apasa pe un loc de pe harta sau pe un buton \"Du-ma la\".")
+        else:
+            with messages_box:
+                with st.spinner("Ma gandesc..."):
+                    result = chat(S, prompt)
+            say(result["text"])
+            st.session_state.route = result["route"]
+            st.session_state.highlight = result["highlight"]
+            st.session_state.nav_target = result["route"][-1] if result["route"] else None
 
     with messages_box:
         if not st.session_state.messages:
@@ -255,7 +342,10 @@ with col_chat:
                     "ai pana la imbarcare, sau intreaba-ma orice despre terminal.")
         for m in st.session_state.messages:
             with st.chat_message(m["role"]):
-                st.markdown(m["content"])
+                if m["role"] == "user":
+                    st.text(m["content"])   # textul pasagerului, fara Markdown/HTML (fara linkuri, imagini, formule)
+                else:
+                    st.markdown(m["content"])
 
 
 def refresh_route():
@@ -298,10 +388,10 @@ def map_panel():
     if res["go"]:
         navigate_to(res["go"])  # click pe un loc de pe harta
 
-    fix = res["fix"]
-    if fix and fix.get("t") != st.session_state.get("last_fix_t"):
+    fix = valid_fix(res["fix"])
+    if fix and fix["t"] != st.session_state.get("last_fix_t"):
         st.session_state.last_fix_t = fix["t"]
-        moved = apply_live_position(S, float(fix["s"]), fix.get("at"))
+        moved = apply_live_position(S, fix["s"], fix["at"])
         st.session_state.suggest_security = moved["suggest_security"]
         if moved["changed"]:
             refresh_route()
@@ -310,6 +400,11 @@ def map_panel():
     target = st.session_state.get("nav_target")
     if target and S["position"] == target:
         st.success(f"Ai ajuns: **{NODES[target]['name']}**.")
+    elif st.session_state.route:
+        # Rezumatul traseului si sub harta: pe telefon, raspunsul din chat e mai jos si nu se vede.
+        r = get_route(S, st.session_state.route[-1])
+        if r.get("reachable") and r["distance_m"] > 0:
+            st.info(f"\U0001F9ED Traseu spre **{r['target_name']}**: ~{r['walk_min']} min ({r['distance_m']} m)")
 
     if st.session_state.get("suggest_security") and STATES.index(S["state"]) < STATES.index("THROUGH_SECURITY"):
         st.info("Localizarea arata ca ai trecut de controlul de securitate. Confirmi?")
@@ -321,6 +416,7 @@ def map_panel():
             st.session_state.route, st.session_state.highlight = [], []
             st.session_state.nav_target = None
             say(f"Etapa actualizata: **{STATE_LABELS['THROUGH_SECURITY']}**. {next_step(S)['step']}")
+            confirm(f"Etapa actualizata: {STATE_LABELS['THROUGH_SECURITY']}")
             st.rerun()  # reincarca toata pagina: etapele din stanga si chatul
 
     st.caption("Du-ma la:")
