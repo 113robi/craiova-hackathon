@@ -5,17 +5,20 @@ Ce face in browser (JavaScript):
   2. transforma (lat, lon) in s = metri de la intrare de-a lungul holului si d = pozitia laterala,
      cu aceeasi formula ca airport_core.geo_to_s;
   3. ignora citirile slabe (precizie > max_acc) si netezeste restul cu filtre Kalman 1D (pe s si pe d);
+     o citire foarte departe de estimare (salt tipic in interior) conteaza mai putin;
+     pasii (accelerometrul) + busola muta estimarea la fiecare pas, iar GPS-ul corecteaza abaterea in timp
+     (pedestrian dead reckoning). Fara senzori sau fara pasi detectati, pozitia vine doar din GPS;
   4. deseneaza punctul "Esti aici" pe DRUMUL REAL (care se curbeaza), la distanta s de-a lungul lui.
      GPS-ul lateral e prea imprecis in interior ca sa fie folosit direct; de aceea punctul se muta
      lateral doar cand stim sigur unde e pasagerul:
        - a ajuns la locul spre care are traseu (la cel mult snap_m metri de-a lungul holului);
        - o deplasare laterala mare langa capatul din stanga = a intrat pe holul spre toaleta
          (doar dupa "Sunt la intrare", care fixeaza si referinta laterala);
-  5. intoarce harta dupa busola telefonului. Harta e desenata cu intrarea jos (aproape nordul sus).
-     Pasagerul cu fata spre intrare / parcare (spre sud) o vedea in oglinda: mergea spre dreapta,
-     iar punctul pleca spre stanga. Cand telefonul e indreptat spre sud, se arata harta rotita cu
-     180 de grade (desenata tot de map_svg.py, cu textele drepte). Un con albastru arata incotro e
-     indreptat telefonul. Butonul "Intoarce harta" o roteste manual (telefon fara busola, laptop);
+  5. intoarce harta dupa busola telefonului. Harta e desenata cu intrarea jos (aproape nordul sus);
+     pentru un pasager cu fata spre intrare / parcare (spre sud), o harta fixa apare in oglinda: el merge
+     spre dreapta, iar punctul se misca spre stanga ecranului. Cand telefonul e indreptat spre sud, se
+     arata harta rotita cu 180 de grade (desenata tot de map_svg.py, cu textele drepte). Un con albastru
+     arata incotro e indreptat telefonul. Butonul "Intoarce harta" o roteste manual (laptop, telefon fara busola);
   6. trimite pozitia la Python DOAR cand se schimba nodul cel mai apropiat, pragul de dupa securitate
      sau locul in care a ajuns - ca aplicatia sa nu se reincarce continuu;
   7. "Sunt la intrare": corecteaza abaterea GPS din ziua respectiva (pozitia curenta devine intrarea);
@@ -36,21 +39,34 @@ import streamlit as st
 from airport_core import (CORRIDOR, GEO_AXIS, MAP_X0, MAP_Y0, NODES, PX_PER_M, SECURITY_PASSED_S, STATES,
                           TERMINAL_LENGTH_M, VIEWBOX, WEST_END_S)
 
-MAX_ACCURACY_M = 40     # citirile mai slabe sunt ignorate (iPhone-ul a avut si 50 m in test)
-WALK_VARIANCE = 9       # m^2/s pentru filtrul Kalman: ~3 m/s, mai repede decat merge un pasager
+MAX_ACCURACY_M = 40     # citirile mai slabe se ignora (in masuratorile din terminal, iPhone-ul a ajuns la 50 m)
+WALK_VARIANCE = 9       # m^2/s pentru filtrul Kalman doar cu GPS: ~3 m/s, mai repede decat merge un pasager
+GPS_GATE_SIGMA = 3      # o citire GPS la peste 3 sigma de estimare conteaza proportional mai putin (salturi)
+
+# Pasi + busola. Fiecare pas detectat de accelerometru muta pozitia cu STEP_M in directia in care se uita
+# pasagerul. GPS-ul indoor are erori de 5-15 m care se schimba de la o secunda la alta; pasii nu au acest
+# zgomot, iar GPS-ul ramane doar pentru corectia lenta a abaterii. USE_STEPS = False revine la GPS simplu.
+USE_STEPS = True
+STEP_M = 0.65               # lungimea medie a unui pas de adult cu bagaj de mana
+STEP_VARIANCE = 0.06        # m^2 de incertitudine la fiecare pas (lungimea pasului, eroarea busolei)
+STEPS_TIME_VARIANCE = 1.0   # m^2/s cat timp merg pasii: GPS-ul corecteaza o abatere in ~10 s, fara sa traga punctul
+STEPS_TO_TRUST = 5          # pasii se folosesc abia dupa ce detectorul a gasit primii 5 pasi pe telefonul respectiv
 CALIBRATION_MAX_M = 20  # "Sunt la intrare" apare doar cand GPS-ul te arata la cel mult 20 m de intrare
 SNAP_M = 3              # la cel mult 3 m (de-a lungul holului) de tinta traseului, punctul intra in loc
 # Holul spre toaleta: deplasare laterala de cel putin 10 m fata de intrare, langa capatul din stanga.
 # In masuratori, mersul pe hol a variat cu +-5 m lateral, iar drumul spre toaleta a ajuns la +18 m.
-TOILET_DETECT = {"id": "toilet", "s_min": -16, "s_max": 3, "rel_d": 10}
+# Deplasarea trebuie sa tina hold_ms: un singur salt lateral de GPS nu muta punctul in toaleta.
+TOILET_DETECT = {"id": "toilet", "s_min": -16, "s_max": 3, "rel_d": 10, "hold_ms": 3000}
 
 # "Sus"-ul hartii: perpendiculara pe axa holului, spre peretele opus intrarii / pista.
 # In grade fata de nord, in sensul acelor de ceas (~358.5: harta e aproape cu nordul sus).
 MAP_UP_BEARING = round(math.degrees(math.atan2(-GEO_AXIS["uy"], GEO_AXIS["ux"])) % 360, 1)
-# Harta se intoarce cand telefonul e la peste 90 + 35 de grade fata de "sus"-ul hartii si revine sub 90 - 35.
-# Cat timp pasagerul merge de-a lungul holului (telefonul spre est sau vest), harta nu se schimba,
-# chiar daca busola greseste cu 30 de grade langa structurile de metal.
-FLIP_MARGIN_DEG = 35
+# Harta se intoarce cand telefonul e la peste FLIP_ON_DEG fata de "sus"-ul hartii (pasagerul cu fata spre
+# intrare / parcare) si revine sub FLIP_OFF_DEG. Mersul de-a lungul holului (telefonul spre est sau vest,
+# ~90 de grade, +-30 de eroare a busolei langa metal) cade mereu sub FLIP_OFF_DEG, deci harta e neintoarsa
+# si punctul merge spre dreapta cand mergi spre securitate, indiferent incotro te-ai uitat inainte.
+FLIP_ON_DEG = 145
+FLIP_OFF_DEG = 125
 
 _CSS = """
 .acm-root { display: flex; flex-direction: column; gap: 8px; }
@@ -80,7 +96,8 @@ export default function (component) {
     watchId: null, kf: null, kd: null, est: null, raw: null, status: "idle", error: "", sentKey: null,
     subs: new Set(), send: null, data: null, ticker: null, offset: undefined, dref: undefined,
   });
-  // Orientarea hartii (busola). Separat, ca sa mearga si cu un G creat de o versiune mai veche a paginii.
+  // Starea busolei. Se creeaza separat de G, pentru cazul in care G exista deja in fereastra
+  // (creat de o versiune anterioara a componentei, fara reincarcarea paginii).
   if (!G.orient) {
     G.orient = { mode: "auto", flipped: false, compass: "off", granted: false, listener: null, event: null,
                  heading: null, headingT: 0, hx: null, hy: null, since: null, drawn: null, drawnAt: 0, turnT: 0 };
@@ -90,6 +107,8 @@ export default function (component) {
     } catch {}
   }
   const O = G.orient;
+  // Detectorul de pasi: base = gravitatia (medie lenta), lp = acceleratia pasului, filtrata.
+  if (!G.ped) G.ped = { base: null, lp: null, armed: false, last: 0, steps: 0, lastEvt: 0, listener: null };
   G.send = setStateValue;
   G.data = data;
   if (G.offset === undefined) {   // corectia "Sunt la intrare" ramane valabila daca reincarci pagina
@@ -173,6 +192,7 @@ export default function (component) {
   function stop() {
     if (G.watchId !== null) navigator.geolocation.clearWatch(G.watchId);
     G.watchId = null; G.kf = null; G.kd = null; G.est = null; G.status = "idle"; G.sentKey = null;
+    G.ped.steps = 0; G.ped.armed = false;
     stopCompass();
     notify();
   }
@@ -202,13 +222,25 @@ export default function (component) {
     return { s: ex * a.ux + ny * a.uy + (G.offset || 0), d: -ex * a.uy + ny * a.ux };
   }
 
-  // Filtru Kalman 1D: citirile precise conteaza mai mult, iar dupa o pauza
-  // (pasagerul poate merge ~3 m/s) estimarea se muta repede la citirea noua.
-  function kalman(prev, z, R, now, q) {
+  // Filtru Kalman 1D (cate unul pe s si pe d). Prezicerea: incertitudinea P creste cu q m^2/s,
+  // cat de departe poate ajunge pasagerul de la ultima estimare.
+  function predict(f, now, q) {
+    f.P += q * Math.max(0, (now - f.t) / 1000);
+    f.t = now;
+  }
+
+  // Actualizarea cu o citire GPS z (varianta R = precizia^2): citirile precise conteaza mai mult. O citire la peste
+  // gps_gate sigma de estimare (salt tipic in interior) primeste un R proportional mai mare, ca punctul sa nu sara.
+  function update(prev, z, R, now, q) {
     if (!prev) return { s: z, P: R, t: now };
-    const P = prev.P + q * Math.max(0, (now - prev.t) / 1000), K = P / (P + R);
-    const next = { s: prev.s + K * (z - prev.s), P: (1 - K) * P, t: now };
-    return Number.isFinite(next.s) ? next : { s: z, P: R, t: now };  // nu lasam filtrul sa se blocheze
+    const f = { ...prev }, gate = G.data.gps_gate || 3;
+    predict(f, now, q);
+    const v = z - f.s, S = f.P + R;
+    if (v * v > gate * gate * S) R *= (v * v) / (gate * gate * S);
+    const K = f.P / (f.P + R);
+    f.s += K * v;
+    f.P *= 1 - K;
+    return Number.isFinite(f.s) && Number.isFinite(f.P) ? f : { s: z, P: R, t: now };  // filtrul nu se blocheaza
   }
 
   function onFix(p) {
@@ -218,9 +250,10 @@ export default function (component) {
     G.status = "live"; G.error = "";
     const z = toSD(p.coords.latitude, p.coords.longitude), R = Math.max(acc, 3) ** 2;
     if (!Number.isFinite(z.s) || !Number.isFinite(z.d)) return;
-    const q = Number.isFinite(d.walk_var) ? d.walk_var : 9;
-    G.kf = kalman(G.kf, z.s, R, now, q);
-    G.kd = kalman(G.kd, z.d, R, now, q);
+    // Cu pasi, GPS-ul doar corecteaza abaterea (q mic); fara pasi, GPS-ul trebuie sa poata urmari mersul (q mare).
+    const q = stepsActive(now) ? d.steps_time_var : (Number.isFinite(d.walk_var) ? d.walk_var : 9);
+    G.kf = update(G.kf, z.s, R, now, q);
+    G.kd = update(G.kd, z.d, R, now, q);
     G.est = { s: G.kf.s, d: G.kd.s, acc, t: now };
     maybeSend();
     notify();
@@ -230,6 +263,47 @@ export default function (component) {
     if (e.code === 1) { stop(); G.status = "error"; G.error = "Accesul la locatie e blocat. Permite-l din setarile browserului pentru acest site."; }
     else if (e.code === 3) { G.status = G.est ? G.status : "waiting"; }
     else { G.status = "error"; G.error = "Pozitia nu e disponibila. Porneste Locatia si Wi-Fi-ul telefonului."; }
+    notify();
+  }
+
+  // ------------------------------------------------------------------
+  // Pasi: accelerometrul (devicemotion) da un varf la fiecare pas. Pasul muta estimarea cu step_m in directia
+  // busolei, proiectata pe axa holului (s) si de-a curmezisul lui (d).
+  function onMotion(e) {
+    const a = e.accelerationIncludingGravity;
+    if (!a || typeof a.x !== "number" || typeof a.y !== "number" || typeof a.z !== "number") return;
+    const P = G.ped, now = Date.now(), m = Math.hypot(a.x, a.y, a.z);
+    P.lastEvt = now;
+    P.base = P.base === null ? m : P.base + 0.02 * (m - P.base);
+    P.lp = P.lp === null ? 0 : P.lp + 0.3 * (m - P.base - P.lp);   // fara tremurul mainii
+    // Varf peste +1 m/s^2, apoi coborare sub +0.2: un pas (cel mult ~3 pasi pe secunda).
+    if (!P.armed) {
+      if (P.lp > 1.0) P.armed = true;
+    } else if (P.lp < 0.2) {
+      P.armed = false;
+      if (now - P.last >= 300) { P.last = now; onStep(now); }
+    }
+  }
+
+  // Pasii se folosesc doar daca detectorul a dovedit ca merge pe telefonul respectiv si busola e proaspata.
+  function stepsActive(now) {
+    const d = G.data;
+    return !!d.use_steps && G.ped.steps >= d.steps_to_trust && now - G.ped.lastEvt < 2000 &&
+           O.heading !== null && now - O.headingT < 3000;
+  }
+
+  function onStep(now) {
+    G.ped.steps++;
+    if (!G.kf || !G.kd || !stepsActive(now)) return;
+    const d = G.data, a = d.axis, h = O.heading * Math.PI / 180;
+    const east = Math.sin(h) * d.step_m, north = Math.cos(h) * d.step_m;
+    for (const [f, delta] of [[G.kf, east * a.ux + north * a.uy], [G.kd, -east * a.uy + north * a.ux]]) {
+      predict(f, now, d.steps_time_var);
+      f.s += delta;
+      f.P += d.step_var;
+    }
+    G.est = { ...G.est, s: G.kf.s, d: G.kd.s, t: now };
+    maybeSend();
     notify();
   }
 
@@ -246,6 +320,9 @@ export default function (component) {
     if (needsTap && !gesture) { O.compass = "ask"; return; }   // apare butonul "Roteste dupa busola"
     listen();
     if (ask && gesture && !O.granted) {
+      // iPhone: pasii (devicemotion) cer acelasi acord ca busola, tot la o apasare.
+      const DME = window.DeviceMotionEvent;
+      if (DME && typeof DME.requestPermission === "function") DME.requestPermission().catch(() => {});
       DOE.requestPermission()
         .then((r) => {
           if (r === "granted") O.granted = true;
@@ -263,12 +340,18 @@ export default function (component) {
       O.listener = onOrient;
       window.addEventListener(O.event, O.listener);
     }
+    if (!G.ped.listener && window.DeviceMotionEvent) {
+      G.ped.listener = onMotion;
+      window.addEventListener("devicemotion", G.ped.listener);
+    }
     O.compass = "on";
   }
 
   function unlisten() {
     if (O.listener) window.removeEventListener(O.event, O.listener);
     O.listener = null;
+    if (G.ped.listener) window.removeEventListener("devicemotion", G.ped.listener);
+    G.ped.listener = null;
   }
 
   function stopCompass() {
@@ -309,11 +392,11 @@ export default function (component) {
     }
   }
 
-  // Harta intoarsa = telefonul indreptat spre jumatatea "de jos" a hartii (spre intrare / parcare).
-  // Prag cu histerezis + 0.8 s de confirmare, ca harta sa nu se roteasca de la tremurul busolei.
+  // Harta intoarsa = telefonul indreptat clar spre intrare / parcare. Prag cu histerezis ingust (flip_on / flip_off),
+  // ales asa incat mersul de-a lungul holului sa dea mereu harta neintoarsa, + 0.8 s de confirmare.
   function decideFlip() {
-    const off = Math.abs(angleDiff(O.heading, G.data.up_bearing)), m = G.data.flip_margin;
-    const want = O.flipped ? off > 90 - m : off > 90 + m;
+    const off = Math.abs(angleDiff(O.heading, G.data.up_bearing));
+    const want = O.flipped ? off > G.data.flip_off : off > G.data.flip_on;
     if (want === O.flipped) { O.since = null; return false; }
     const now = Date.now();
     if (O.since === null) O.since = now;
@@ -344,12 +427,18 @@ export default function (component) {
 
   // Unde desenam pasagerul: in locul in care a ajuns, sau pe drumul real.
   function spot() {
-    const d = G.data, s = Math.min(Math.max(G.est.s, d.s_min), d.s_max);
+    const d = G.data, now = Date.now(), s = Math.min(Math.max(G.est.s, d.s_min), d.s_max);
     const t = d.target;
-    if (t && Math.abs(G.est.s - t.s) <= d.snap_m) return { s: t.s, dd: t.d, at: t.id };
+    // Intra in locul-tinta la snap_m metri si iese abia la dublu, ca punctul sa nu sara inainte-inapoi la prag.
+    const near = !!t && Math.abs(G.est.s - t.s) <= (G.snapId === t.id ? 2 * d.snap_m : d.snap_m);
+    G.snapId = near ? t.id : null;
+    if (near) return { s: t.s, dd: t.d, at: t.id };
     const w = d.toilet;
-    if (w && !d.passed && G.dref !== null && G.est.s >= w.s_min && G.est.s <= w.s_max &&
-        G.est.d - G.dref >= w.rel_d) return { s: w.s, dd: w.d, at: w.id };
+    const side = !!w && !d.passed && G.dref != null && G.est.s >= w.s_min && G.est.s <= w.s_max &&
+                 G.est.d - G.dref >= w.rel_d;
+    if (!side) G.toiletSince = null;
+    else if (G.toiletSince == null) G.toiletSince = now;
+    if (side && now - G.toiletSince >= w.hold_ms) return { s: w.s, dd: w.d, at: w.id };
     return { s, dd: pathD(s), at: null };
   }
 
@@ -404,6 +493,7 @@ export default function (component) {
 
     const ago = (t) => Math.max(0, Math.round((now - t) / 1000));
     const cal = G.offset ? `, calibrat la intrare (${G.offset > 0 ? "+" : ""}${Math.round(G.offset)} m)` : "";
+    const steps = G.ped.steps ? ` · ${G.ped.steps} pasi${stepsActive(now) ? "" : " (doar GPS)"}` : "";
     let cls = "", text = "";
     if (!window.isSecureContext) text = "Localizarea live merge doar pe o adresa https:// (vezi tunelul Cloudflare).";
     else if (G.status === "idle") text = "Localizarea live e oprita. Apasa pe un loc de pe harta ca sa vezi traseul.";
@@ -411,7 +501,7 @@ export default function (component) {
     else if (G.status === "weak") { cls = "warn"; text = `Semnal slab (precizie ${Math.round(G.raw.acc)} m). Astept o citire mai buna...`; }
     else if (G.status === "live" && G.est) {
       cls = fresh ? "ok" : "warn";
-      text = fresh ? `Live: precizie ${Math.round(G.est.acc)} m, actualizat acum ${ago(G.est.t)} s${cal}`
+      text = fresh ? `Live: precizie ${Math.round(G.est.acc)} m, actualizat acum ${ago(G.est.t)} s${cal}${steps}`
                    : `Nicio pozitie noua de ${ago(G.est.t)} s.`;
     } else if (G.status === "error") { cls = "err"; text = G.error; }
     statusEl.className = "acm-status " + cls;
@@ -459,7 +549,14 @@ def live_map(svg: str, state: str, target: str | None = None, key: str = "live_m
         "W": VIEWBOX[0],   # harta intoarsa: x -> W - x, y -> H - y (ca in map_svg.py)
         "H": VIEWBOX[1],
         "up_bearing": MAP_UP_BEARING,
-        "flip_margin": FLIP_MARGIN_DEG,
+        "flip_on": FLIP_ON_DEG,
+        "flip_off": FLIP_OFF_DEG,
+        "gps_gate": GPS_GATE_SIGMA,
+        "use_steps": USE_STEPS,
+        "step_m": STEP_M,
+        "step_var": STEP_VARIANCE,
+        "steps_time_var": STEPS_TIME_VARIANCE,
+        "steps_to_trust": STEPS_TO_TRUST,
         "path": [[NODES[n]["s"], NODES[n]["d"]] for n in CORRIDOR],
         "corridor": [{"id": n, "s": NODES[n]["s"]} for n in CORRIDOR],
         "thresholds": [SECURITY_PASSED_S],
