@@ -83,6 +83,21 @@ _STYLE = """
 
 W, H = VIEWBOX
 
+# Elementele desenului, in metri (s, d). Sunt folosite si de api.py, ca un frontend separat sa deseneze la fel.
+NO_ACCESS_D = (-6, 16)        # banda "fara acces" din stanga holului, intre aceste valori d
+SECURITY_D = (-10, 20)        # banda securitatii, decupata de conturul cladirii noi
+# Trecerile prin pereti: usa de la intrare, spre toaleta (doi pereti), spre securitate (doi pereti).
+# "ground" = culoarea de afara, "landside" = culoarea holului.
+WALL_OPENINGS = [
+    ((-2.2, -5.13), (2.2, -5.05), "ground"),
+    ((-5.5, 15.9), (-2.5, 15.9), "landside"),
+    ((-5.5, 14.2), (-2.5, 14.2), "landside"),
+    ((39.0, 9.4), (41.8, 6.6), "landside"),
+    ((39.9, 9.4), (42.9, 6.6), "landside"),
+]
+ZONE_CAPTIONS = [("HOL PUBLIC", 20, -2.5), ("SECURITATE", 49.3, 21.5), ("ZONA PLECARI", 66, 15)]
+PLANES_HINT_SD = (66, 23)     # "spre avioane", deasupra zonei de plecari
+
 
 class _View:
     """Proiectia (s, d) in metri -> (x, y) pe harta, intr-una din cele doua orientari.
@@ -152,25 +167,19 @@ def _building(v):
         f'<polygon points="{_pts(v, OUTLINE_OLD_HALL)}" fill="{c["landside"]}" {wall} stroke-width="3"/>',
         f'<polygon points="{_pts(v, OUTLINE_TOILET_ANNEX)}" fill="{c["landside"]}" {wall} stroke-width="2"/>',
         # Partea din stanga a holului, fara acces pentru pasageri
-        f'<rect {_rect(v, DRAW_S_MIN - 1, WEST_NO_ACCESS_S, 16, -6)} fill="{c["no_access"]}" opacity="0.7" '
-        f'clip-path="url(#{clip_old})"/>',
+        f'<rect {_rect(v, DRAW_S_MIN - 1, WEST_NO_ACCESS_S, NO_ACCESS_D[1], NO_ACCESS_D[0])} fill="{c["no_access"]}" '
+        f'opacity="0.7" clip-path="url(#{clip_old})"/>',
         f'<text x="{no_access_x}" y="{no_access_y}" font-size="15" text-anchor="middle" '
         f'fill="{c["muted"]}" transform="rotate(-90 {no_access_x} {no_access_y})">fara acces</text>',
         # Securitatea: banda rosiatica, in interiorul cladirii alipite
-        f'<rect {_rect(v, SECURITY_ZONE_S[0], SECURITY_ZONE_S[1], 20, -10)} fill="{c["security"]}" '
-        f'clip-path="url(#{clip_new})"/>',
-        # Trecerile prin pereti: usa de la intrare, spre toaleta, spre securitate
-        _gap(v, (-2.2, -5.13), (2.2, -5.05), c["ground"]),
-        _gap(v, (-5.5, 15.9), (-2.5, 15.9), c["landside"]),
-        _gap(v, (-5.5, 14.2), (-2.5, 14.2), c["landside"]),
-        _gap(v, (39.0, 9.4), (41.8, 6.6), c["landside"]),
-        _gap(v, (39.9, 9.4), (42.9, 6.6), c["landside"]),
+        f'<rect {_rect(v, SECURITY_ZONE_S[0], SECURITY_ZONE_S[1], SECURITY_D[1], SECURITY_D[0])} '
+        f'fill="{c["security"]}" clip-path="url(#{clip_new})"/>',
+        # Trecerile prin pereti
+        *[_gap(v, p0, p1, c[color]) for p0, p1, color in WALL_OPENINGS],
         # Numele zonelor si repere exterioare
-        _caption(v, 20, -2.5, "HOL PUBLIC"),
-        _caption(v, 49.3, 21.5, "SECURITATE"),
-        _caption(v, 66, 15, "ZONA PLECARI"),
-        f'<text x="{v.x(66)}" y="{v.text_y(23, 17)}" font-size="17" text-anchor="middle" fill="{c["muted"]}">'
-        f'{to_planes} spre avioane</text>',
+        *[_caption(v, s, d, text) for text, s, d in ZONE_CAPTIONS],
+        f'<text x="{v.x(PLANES_HINT_SD[0])}" y="{v.text_y(PLANES_HINT_SD[1], 17)}" font-size="17" '
+        f'text-anchor="middle" fill="{c["muted"]}">{to_planes} spre avioane</text>',
         f'<text x="{ex}" y="{parking_y}" font-size="17" text-anchor="middle" '
         f'fill="{c["muted"]}">{to_parking} parcare, autobuz</text>',
     ]
