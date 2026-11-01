@@ -87,6 +87,17 @@ cloudflared tunnel --url http://localhost:8501
 
 Tunelul afișează un link `https://….trycloudflare.com`, care se deschide în browserul telefonului. În terminal, pasagerul apasă **„Pornește localizarea live”**, permite accesul la locație și apasă **„Sunt la intrare”** când e la intrare.
 
+### API pentru un frontend separat
+
+`api.py` expune aceleași funcții ca interfața Streamlit, ca JSON, pentru o aplicație web separată (de exemplu în React). Logica rămâne în aceleași module.
+
+```bash
+python api.py                                     # http://127.0.0.1:8000, doar local
+cloudflared tunnel --url http://127.0.0.1:8000    # link HTTPS pentru frontend
+```
+
+Frontend-ul primește adresa API-ului prin `?api=https://….trycloudflare.com`. Lista endpoint-urilor e la începutul fișierului `api.py`. `API_PORT` schimbă portul, iar `API_ALLOWED_ORIGINS` restrânge originile acceptate de browser (CORS).
+
 ### Încercare fără să fii în aeroport
 
 În afara terminalului poziția GPS nu are sens, așa că localizarea live rămâne oprită. Restul se poate încerca pe laptop:
@@ -99,16 +110,18 @@ Tunelul afișează un link `https://….trycloudflare.com`, care se deschide în
 
 ## Arhitectură
 
-Aplicația rulează într-un singur proces Streamlit. Streamlit servește interfața în browser și execută codul Python pe server, deci nu există un API separat între frontend și backend. Codul e împărțit pe straturi: fiecare modul are o funcție publică mică (contractul lui) și se poate testa separat.
+Aplicația rulează într-un singur proces Streamlit. Streamlit servește interfața în browser și execută codul Python pe server. Pentru un frontend separat, `api.py` expune aceleași funcții ca JSON, peste aceleași module. Codul e împărțit pe straturi: fiecare modul are o funcție publică mică (contractul lui) și se poate testa separat.
 
 ```mermaid
 flowchart LR
     subgraph Browser["Telefon / browser (frontend)"]
         UI["Pagina Streamlit<br/>chat, bilet, etape"]
         JS["Componenta JavaScript<br/>GPS, busolă, click pe hartă"]
+        FE["Frontend separat<br/>(opțional)"]
     end
-    subgraph Server["Server Python (backend, un proces Streamlit)"]
+    subgraph Server["Server Python (backend)"]
         APP["app.py<br/>sesiunea pasagerului"]
+        API["api.py<br/>JSON, sesiuni, limite"]
         LIVE["live_map.py"]
         MAPSVG["map_svg.py"]
         AGENT["agent.py"]
@@ -129,6 +142,10 @@ flowchart LR
     MAPSVG --> CORE
     AGENT --> CORE
     TICKET --> AGENT
+    FE <--> API
+    API --> CORE
+    API --> AGENT
+    API --> TICKET
     AGENT <--> GEMINI
     TICKET <--> GEMINI
 ```
@@ -136,6 +153,7 @@ flowchart LR
 | Strat | Fișier | Rol | Contract |
 |---|---|---|---|
 | Interfață | `app.py` | Pagina Streamlit: hartă, chat, bilet, etape. Ține sesiunea pasagerului și leagă modulele. | punctul de pornire |
+| API | `api.py` | Aceleași funcții ca JSON, pentru un frontend separat: sesiuni, validarea datelor din browser, limite. | `/api/session`, `/route`, `/position`, `/chat`, `/ticket` |
 | Frontend (JavaScript) | `live_map.py` | Componentă proprie (`st.components.v2`): GPS, filtre Kalman, busolă, click pe hartă, „Sunt la intrare”. | `live_map(svg, state, target) -> {fix, go}` |
 | Prezentare | `map_svg.py` | Harta terminalului ca SVG la scară, în două orientări, cu locuri pe care se poate apăsa. | `render_map(position, route, highlight) -> str` |
 | AI | `agent.py` | Chat cu Gemini prin function calling. Traseul și locurile evidențiate vin doar din rezultatele tool-urilor. | `chat(session, message) -> {text, route, highlight}` |
@@ -149,6 +167,7 @@ flowchart LR
 ```
 craiova-hackathon/
 ├── app.py                  interfața Streamlit (punctul de pornire)
+├── api.py                  API JSON pentru un frontend separat (aceleași funcții ca app.py)
 ├── live_map.py             componenta JavaScript: localizare live, busolă, click pe hartă
 ├── map_svg.py              desenul hărții (SVG)
 ├── agent.py                chatul AI (Gemini, function calling)
@@ -227,6 +246,7 @@ python tools/make_demo_ticket.py --zbor "W6 1234" --destinatie "LONDRA LUTON" --
 |---|---|---|---|
 | Limbaj | Python | 3.15 (minim 3.11) | tot proiectul |
 | Interfață și server | [Streamlit](https://streamlit.io) | 1.66.1 | pagina, sesiunea, `st.fragment`, componenta proprie (`st.components.v2`) |
+| API pentru frontend separat | Starlette + uvicorn (vin deja cu Streamlit) | 1.10.0 / 0.54.0 | endpoint-urile JSON din `api.py` |
 | AI | `google-genai` | 2.34.0 | clientul Gemini: function calling, răspuns JSON după schemă |
 | Model | `gemini-3.5-flash-lite` | – | chatul și citirea biletului; se schimbă din `GEMINI_MODEL` |
 | Imagini | Pillow | 13.0.0 | rotirea și micșorarea pozei biletului, biletul de exemplu |
@@ -247,6 +267,7 @@ Versiunile din tabel sunt fixate în `requirements.txt`. Proiectul nu folosește
 - **Textul scris de pasager se afișează ca text simplu** (`st.text`), fără Markdown sau HTML: fără linkuri, imagini sau formule.
 - **Limită de cereri AI.** Cel mult 5 cereri pe minut pentru fiecare sesiune (mesaje în chat și scanări de bilet), ca un singur utilizator să nu consume cota cheii Gemini. Traseele din hartă nu au limită, pentru că nu folosesc AI.
 - **Configurarea serverului** (`.streamlit/config.toml`): serverul ascultă doar pe `localhost`, deci din rețea se ajunge numai prin tunelul HTTPS. O eroare neprevăzută apare în pagină ca mesaj generic, cu detaliile doar în consola serverului. Meniul de dezvoltator (Deploy, Rerun, Clear cache) e ascuns, statisticile de utilizare Streamlit sunt oprite, iar protecțiile XSRF și CORS rămân pornite.
+- **API-ul** (`api.py`) aplică aceleași reguli. Validează fiecare câmp și limitează corpul cererii (16 KB pentru JSON, 10 MB pentru poză). Acceptă 5 cereri AI pe minut pentru fiecare sesiune și 10 pe tot serverul. Sesiunile expiră după 6 ore, iar erorile nu conțin detalii interne. Răspunsurile au `Cache-Control: no-store` și `X-Content-Type-Options: nosniff`. CORS e deschis implicit, pentru că API-ul nu folosește cookie-uri sau autentificare, și se poate restrânge cu `API_ALLOWED_ORIGINS`.
 - **Dependențe.** Pe 01.11.2026, cele 52 de pachete instalate (directe și indirecte) nu aveau vulnerabilități cunoscute în baza [OSV](https://osv.dev).
 
 Ce nu acoperă prototipul:
@@ -298,6 +319,7 @@ Toate funcționalitățile descrise mai sus sunt implementate. Pozițiile locuri
 ```bash
 python airport_core.py                  # autotestul nucleului, fără internet -> OK
 python ticket.py                        # validarea datelor citite de pe bilet, fără internet -> OK
+python api.py test                      # endpoint-urile API, cu AI-ul înlocuit de răspunsuri fixe, fără internet -> OK
 python map_svg.py                       # scrie o previzualizare HTML a hărții și afișează calea
 python test.py                          # verifică cheia Gemini (1 cerere)
 python ticket.py tools/bilet-demo.png   # citirea reală a biletului de exemplu (1 cerere Gemini)
